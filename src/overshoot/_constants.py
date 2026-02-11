@@ -1,0 +1,16 @@
+# API
+DEFAULT_BASE_URL = "https://api.overshoot.ai/v0.2"
+DEFAULT_BACKEND = "overshoot"
+DEFAULT_MODEL = "Qwen/Qwen3-VL-30B-A3B-Instruct"
+
+# Clip mode defaults
+DEFAULT_SAMPLING_RATIO = 1.0
+DEFAULT_FPS = 30
+DEFAULT_CLIP_LENGTH_SECONDS = 0.2
+DEFAULT_DELAY_SECONDS = 0.2
+
+# Frame mode defaults
+DEFAULT_INTERVAL_SECONDS = 0.2
+
+# Keepalive
+KEEPALIVE_DIVISOR = 2  # renew at ttl / KEEPALIVE_DIVISOR
