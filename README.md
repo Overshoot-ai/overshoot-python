@@ -107,11 +107,12 @@ await client.close()
 | `model` | `str` | `"Qwen/Qwen3-VL-30B-A3B-Instruct"` | Model name |
 | `output_schema` | `dict` | `None` | JSON schema for structured output |
 | `max_output_tokens` | `int` | `None` | Cap tokens per inference request |
-| `sampling_ratio` | `float` | `1.0` | Clip mode: frame sampling ratio |
-| `fps` | `int` | `30` | Clip mode: frames per second |
-| `clip_length_seconds` | `float` | `0.2` | Clip mode: clip duration |
-| `delay_seconds` | `float` | `0.2` | Clip mode: delay between clips |
+| `target_fps` | `int` | `6` | Clip mode: target frame sampling rate (1–30) |
+| `clip_length_seconds` | `float` | `0.5` | Clip mode: clip duration |
+| `delay_seconds` | `float` | `0.5` | Clip mode: delay between clips |
 | `interval_seconds` | `float` | `0.2` | Frame mode: capture interval |
+| `sampling_ratio` | `float` | `1.0` | *Deprecated* — use `target_fps` instead |
+| `fps` | `int` | `30` | *Deprecated* — use `target_fps` instead |
 
 ### `max_output_tokens`
 
@@ -201,10 +202,9 @@ stream = await client.streams.create(
     prompt="What is happening in this scene?",
     on_result=handle_result,
     mode="clip",
-    sampling_ratio=1.0,          # Process 100% of frames (default)
-    clip_length_seconds=0.2,     # 0.2 second clips (default)
-    delay_seconds=0.2,           # New clip every 0.2s (default)
-    fps=30,                      # Frames per second (default: 30)
+    target_fps=6,                # Target frame sampling rate (default)
+    clip_length_seconds=0.5,     # 0.5 second clips (default)
+    delay_seconds=0.5,           # New clip every 0.5s (default)
 )
 ```
 
@@ -232,16 +232,16 @@ stream = await client.streams.create(
 
 #### Clip Mode Parameters
 
-- **`fps`**: The frame rate of your video source (default: 30).
-- **`sampling_ratio`**: What fraction of frames to include in each clip (1.0 = 100% of frames, default).
-- **`clip_length_seconds`**: Duration of video captured for each inference (default: 0.2 seconds).
-- **`delay_seconds`**: How often inference runs (default: 0.2 seconds — 5 inferences per second).
+- **`target_fps`**: Target frame sampling rate (1–30). The server samples frames at this rate. (Default: 6)
+- **`clip_length_seconds`**: Duration of video captured for each inference (default: 0.5 seconds).
+- **`delay_seconds`**: How often inference runs (default: 0.5 seconds — 2 inferences per second).
 
-**Example with defaults:** `fps=30`, `clip_length_seconds=0.2`, `sampling_ratio=1.0`, `delay_seconds=0.2`:
+**Example with defaults:** `target_fps=6`, `clip_length_seconds=0.5`, `delay_seconds=0.5`:
 
-- Each clip captures 0.2 seconds of video (6 frames at 30fps)
-- 100% of frames are sampled = 6 frames sent to the model
-- New clip starts every 0.2 seconds = ~5 inference results per second
+- Each clip captures 0.5 seconds of video at 6fps = 3 frames sent to the model
+- New clip starts every 0.5 seconds = ~2 inference results per second
+
+> **Legacy parameters:** `fps` and `sampling_ratio` are still accepted for backwards compatibility. The server resolves them to `target_fps = int(fps * sampling_ratio)`. You cannot mix `target_fps` with `fps`/`sampling_ratio`.
 
 #### Frame Mode Parameters
 
@@ -256,8 +256,8 @@ stream = await client.streams.create(
     source=source,
     prompt="Track the person",
     on_result=handle_result,
-    sampling_ratio=1.0,
-    clip_length_seconds=0.2,
+    target_fps=10,
+    clip_length_seconds=0.5,
     delay_seconds=0.2,
 )
 ```
@@ -269,7 +269,7 @@ stream = await client.streams.create(
     source=source,
     prompt="Alert if someone enters the room",
     on_result=handle_result,
-    sampling_ratio=0.5,
+    target_fps=3,
     clip_length_seconds=3.0,
     delay_seconds=2.0,
 )
@@ -489,14 +489,13 @@ api = overshoot.ApiClient(api_key="sk-...")
 response = await api.create_stream(
     source=overshoot.LiveKitSource(url="wss://...", token="..."),
     processing=overshoot.ClipProcessingConfig(
-        sampling_ratio=1.0,
-        fps=30,
-        clip_length_seconds=0.2,
-        delay_seconds=0.2,
+        target_fps=6,
+        clip_length_seconds=0.5,
+        delay_seconds=0.5,
     ),
     inference=overshoot.InferenceConfig(
         prompt="Describe what you see",
-        max_output_tokens=25,  # Optional: must satisfy max_output_tokens / delay_seconds <= 128
+        max_output_tokens=64,  # Optional: must satisfy max_output_tokens / delay_seconds <= 128
     ),
     mode="clip",
 )

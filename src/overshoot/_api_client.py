@@ -35,8 +35,13 @@ def _serialize_source(source: WireSource) -> dict[str, Any]:
 
 
 def _serialize_processing(processing: ProcessingConfig) -> dict[str, Any]:
-    """Convert a ProcessingConfig to the API payload format."""
-    return asdict(processing)
+    """Convert a ProcessingConfig to the API payload format.
+
+    For ClipProcessingConfig, only sends the relevant fields (target_fps
+    or legacy fps/sampling_ratio), stripping None values.
+    """
+    d = asdict(processing)
+    return {k: v for k, v in d.items() if v is not None}
 
 
 def _serialize_inference(inference: InferenceConfig) -> dict[str, Any]:

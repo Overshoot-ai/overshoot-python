@@ -15,6 +15,7 @@ from ._constants import (
     DEFAULT_INTERVAL_SECONDS,
     DEFAULT_MODEL,
     DEFAULT_SAMPLING_RATIO,
+    DEFAULT_TARGET_FPS,
 )
 from ._http import HttpClient
 from ._sources import resolve_source
@@ -55,10 +56,12 @@ class StreamsAPI:
         output_schema: Optional[dict[str, Any]] = None,
         max_output_tokens: Optional[int] = None,
         # Clip mode params
-        sampling_ratio: Optional[float] = None,
-        fps: Optional[int] = None,
+        target_fps: Optional[int] = None,
         clip_length_seconds: Optional[float] = None,
         delay_seconds: Optional[float] = None,
+        # Legacy clip mode params (deprecated — use target_fps)
+        sampling_ratio: Optional[float] = None,
+        fps: Optional[int] = None,
         # Frame mode params
         interval_seconds: Optional[float] = None,
     ) -> Stream:
@@ -87,14 +90,19 @@ class StreamsAPI:
             Model name for inference.
         output_schema:
             Optional JSON schema for structured output.
-        sampling_ratio:
-            Clip mode: fraction of frames to sample (0.0–1.0).
-        fps:
-            Clip mode: frames per second.
+        target_fps:
+            Clip mode: target frame sampling rate (1–30). Preferred over
+            ``fps`` + ``sampling_ratio``.
         clip_length_seconds:
             Clip mode: duration of each clip.
         delay_seconds:
             Clip mode: delay between clips.
+        sampling_ratio:
+            *Deprecated* — use ``target_fps`` instead.
+            Clip mode: fraction of frames to sample (0.0–1.0).
+        fps:
+            *Deprecated* — use ``target_fps`` instead.
+            Clip mode: frames per second.
         interval_seconds:
             Frame mode: seconds between frame captures.
         """
@@ -104,10 +112,11 @@ class StreamsAPI:
         # 2. Build processing config
         processing = self._build_processing(
             mode=mode,
-            sampling_ratio=sampling_ratio,
-            fps=fps,
+            target_fps=target_fps,
             clip_length_seconds=clip_length_seconds,
             delay_seconds=delay_seconds,
+            sampling_ratio=sampling_ratio,
+            fps=fps,
             interval_seconds=interval_seconds,
         )
 
@@ -159,10 +168,11 @@ class StreamsAPI:
     def _build_processing(
         *,
         mode: Optional[StreamMode],
-        sampling_ratio: Optional[float],
-        fps: Optional[int],
+        target_fps: Optional[int],
         clip_length_seconds: Optional[float],
         delay_seconds: Optional[float],
+        sampling_ratio: Optional[float],
+        fps: Optional[int],
         interval_seconds: Optional[float],
     ) -> ProcessingConfig:
         """Build the processing config from flat params."""
@@ -173,9 +183,26 @@ class StreamsAPI:
             )
 
         # Clip mode (default)
+        has_legacy = sampling_ratio is not None or fps is not None
+
+        # Legacy format: only when user explicitly provides fps or sampling_ratio
+        if has_legacy:
+            return ClipProcessingConfig(
+                sampling_ratio=sampling_ratio if sampling_ratio is not None else DEFAULT_SAMPLING_RATIO,
+                fps=fps if fps is not None else DEFAULT_FPS,
+                clip_length_seconds=(
+                    clip_length_seconds
+                    if clip_length_seconds is not None
+                    else DEFAULT_CLIP_LENGTH_SECONDS
+                ),
+                delay_seconds=(
+                    delay_seconds if delay_seconds is not None else DEFAULT_DELAY_SECONDS
+                ),
+            )
+
+        # Default: target_fps format
         return ClipProcessingConfig(
-            sampling_ratio=sampling_ratio if sampling_ratio is not None else DEFAULT_SAMPLING_RATIO,
-            fps=fps if fps is not None else DEFAULT_FPS,
+            target_fps=target_fps if target_fps is not None else DEFAULT_TARGET_FPS,
             clip_length_seconds=(
                 clip_length_seconds
                 if clip_length_seconds is not None

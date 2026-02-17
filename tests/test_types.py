@@ -55,12 +55,22 @@ def test_camera_source_custom():
     assert s.device == "/dev/video1"
 
 
-def test_clip_processing_config():
+def test_clip_processing_config_target_fps():
+    c = ClipProcessingConfig(target_fps=6)
+    assert c.target_fps == 6
+    assert c.sampling_ratio is None
+    assert c.fps is None
+    assert c.clip_length_seconds == 0.5
+    assert c.delay_seconds == 0.5
+
+
+def test_clip_processing_config_legacy():
     c = ClipProcessingConfig(sampling_ratio=0.5, fps=30)
     assert c.sampling_ratio == 0.5
     assert c.fps == 30
-    assert c.clip_length_seconds == 1.0
-    assert c.delay_seconds == 1.0
+    assert c.target_fps is None
+    assert c.clip_length_seconds == 0.5
+    assert c.delay_seconds == 0.5
 
 
 def test_frame_processing_config():

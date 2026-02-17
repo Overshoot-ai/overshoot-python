@@ -60,12 +60,19 @@ WireSource = Union[LiveKitSource, WebRTCSource]
 
 @dataclass(frozen=True, slots=True)
 class ClipProcessingConfig:
-    """Processing parameters for clip mode (temporal video analysis)."""
+    """Processing parameters for clip mode (temporal video analysis).
 
-    sampling_ratio: float
-    fps: int
-    clip_length_seconds: float = 1.0
-    delay_seconds: float = 1.0
+    Two mutually exclusive formats:
+    - New (preferred): ``target_fps`` — the server samples frames at this rate.
+    - Legacy: ``fps`` + ``sampling_ratio`` — resolved server-side to
+      ``target_fps = int(fps * sampling_ratio)``.
+    """
+
+    target_fps: Optional[int] = None
+    sampling_ratio: Optional[float] = None
+    fps: Optional[int] = None
+    clip_length_seconds: float = 0.5
+    delay_seconds: float = 0.5
 
 
 @dataclass(frozen=True, slots=True)

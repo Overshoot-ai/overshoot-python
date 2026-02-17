@@ -54,7 +54,7 @@ async def test_create_stream_webrtc(mock_api, api_key, base_url):
     try:
         resp = await api.create_stream(
             source=WebRTCSource(sdp="v=0\r\noffer"),
-            processing=ClipProcessingConfig(sampling_ratio=0.5, fps=30),
+            processing=ClipProcessingConfig(target_fps=6),
             inference=InferenceConfig(prompt="Test prompt"),
         )
         assert resp.stream_id == "str-abc"
@@ -279,7 +279,7 @@ async def test_401_raises_authentication_error(mock_api, api_key, base_url):
         with pytest.raises(AuthenticationError):
             await api.create_stream(
                 source=WebRTCSource(sdp="v=0"),
-                processing=ClipProcessingConfig(sampling_ratio=0.5, fps=30),
+                processing=ClipProcessingConfig(target_fps=6),
                 inference=InferenceConfig(prompt="test"),
             )
     finally:
@@ -299,7 +299,7 @@ async def test_402_raises_insufficient_credits(mock_api, api_key, base_url):
         with pytest.raises(InsufficientCreditsError):
             await api.create_stream(
                 source=WebRTCSource(sdp="v=0"),
-                processing=ClipProcessingConfig(sampling_ratio=0.5, fps=30),
+                processing=ClipProcessingConfig(target_fps=6),
                 inference=InferenceConfig(prompt="test"),
             )
     finally:
@@ -335,7 +335,7 @@ async def test_422_raises_validation_error(mock_api, api_key, base_url):
         with pytest.raises(ValidationError):
             await api.create_stream(
                 source=WebRTCSource(sdp="v=0"),
-                processing=ClipProcessingConfig(sampling_ratio=0.5, fps=30),
+                processing=ClipProcessingConfig(target_fps=6),
                 inference=InferenceConfig(prompt="test"),
             )
     finally:
@@ -355,7 +355,7 @@ async def test_500_raises_server_error(mock_api, api_key, base_url):
         with pytest.raises(ServerError):
             await api.create_stream(
                 source=WebRTCSource(sdp="v=0"),
-                processing=ClipProcessingConfig(sampling_ratio=0.5, fps=30),
+                processing=ClipProcessingConfig(target_fps=6),
                 inference=InferenceConfig(prompt="test"),
             )
     finally:
