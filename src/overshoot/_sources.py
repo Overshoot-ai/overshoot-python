@@ -75,7 +75,6 @@ class ResolvedSource:
             self.peer_connection = None
             logger.debug("Peer connection closed")
         if self.media_player is not None:
-            self.media_player.stop()
             self.media_player = None
             logger.debug("Media player stopped")
 
@@ -117,7 +116,6 @@ async def _resolve_file_source(
     player = MediaPlayer(source.path, options=options)
 
     if player.video is None:
-        player.stop()
         raise OvershootError(f"No video track found in file: {source.path}")
 
     pc = _create_peer_connection(ice_servers)
@@ -162,7 +160,6 @@ async def _resolve_camera_source(
     player = MediaPlayer(device, format=fmt)
 
     if player.video is None:
-        player.stop()
         raise OvershootError(f"No video track from camera device: {source.device}")
 
     pc = _create_peer_connection(ice_servers)
