@@ -1,14 +1,22 @@
 import asyncio
 import json
 import logging
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 import aiohttp
 
+from ._constants import (
+    WS_RECONNECT_BASE_SECONDS,
+    WS_RECONNECT_MAX_SECONDS,
+    WS_RECONNECT_MAX_ATTEMPTS,
+)
 from ._http import HttpClient
 from ._sources import ResolvedSource
 from .errors import StreamClosedError, WebSocketError
 from .types import StreamConfigResponse, StreamInferenceResult
+
+if TYPE_CHECKING:
+    from ._livekit_transport import LiveKitTransport
 
 logger = logging.getLogger("overshoot")
 
@@ -32,6 +40,7 @@ class Stream:
         ttl_seconds: int,
         on_result: Callable[[StreamInferenceResult], Any],
         on_error: Optional[Callable[[Exception], Any]],
+        livekit_transport: Optional["LiveKitTransport"] = None,
     ) -> None:
         self._stream_id = stream_id
         self._http = http
@@ -39,11 +48,15 @@ class Stream:
         self._on_result = on_result
         self._on_error = on_error
         self._ttl_seconds = ttl_seconds
+        self._livekit_transport = livekit_transport
 
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._ws_task: Optional[asyncio.Task[None]] = None
         self._keepalive_task: Optional[asyncio.Task[None]] = None
         self._closed = False
+
+        # WS reconnection state
+        self._ws_reconnect_attempts = 0
 
     # ── Properties ───────────────────────────────────────────────────
 
@@ -72,12 +85,13 @@ class Stream:
     async def close(self) -> None:
         """Stop all background tasks and release resources.
 
-        Closes the WebSocket, stops keepalive, shuts down the peer
-        connection (if any), and DELETEs the stream on the server
+        Closes the WebSocket, stops keepalive, disconnects LiveKit (if any),
+        shuts down the peer connection, and DELETEs the stream on the server
         to trigger final billing. Safe to call multiple times.
         """
         if self._closed:
             return
+        # Set closed FIRST to prevent cascade from WS/LiveKit close events
         self._closed = True
         logger.info("Closing stream: %s", self._stream_id)
 
@@ -97,6 +111,11 @@ class Stream:
         if self._ws is not None and not self._ws.closed:
             await self._ws.close()
             self._ws = None
+
+        # Disconnect LiveKit BEFORE server DELETE (order matters)
+        if self._livekit_transport is not None:
+            await self._livekit_transport.disconnect()
+            self._livekit_transport = None
 
         # Close peer connection / media player
         await self._resolved_source.close()
@@ -129,36 +148,98 @@ class Stream:
             updated_at=data.get("updated_at"),
         )
 
-    # ── Background: WebSocket consumer ───────────────────────────────
+    # ── Background: WebSocket consumer with auto-reconnect ───────────
 
     async def _ws_loop(self) -> None:
-        """Connect to the WebSocket and deliver results via on_result."""
+        """Connect to the WebSocket and deliver results via on_result.
+
+        On unexpected disconnect, reconnects with exponential backoff.
+        Fatal close codes (1008 auth, 1001 with reason) stop immediately.
+        """
+        while not self._closed:
+            try:
+                await self._ws_connect_and_consume()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if self._closed:
+                    return
+                logger.warning("WebSocket connection error: %s", exc)
+
+            # If we get here, the WS disconnected. Decide: reconnect or fatal.
+            if self._closed:
+                return
+
+            if self._ws_reconnect_attempts >= WS_RECONNECT_MAX_ATTEMPTS:
+                self._emit_error(
+                    WebSocketError(
+                        f"WebSocket reconnection failed after {WS_RECONNECT_MAX_ATTEMPTS} attempts"
+                    )
+                )
+                asyncio.create_task(self.close(), name="overshoot-close-on-ws-fail")
+                return
+
+            delay = min(
+                WS_RECONNECT_BASE_SECONDS * (2 ** self._ws_reconnect_attempts),
+                WS_RECONNECT_MAX_SECONDS,
+            )
+            self._ws_reconnect_attempts += 1
+            logger.info(
+                "WebSocket reconnecting (attempt %d/%d) in %.1fs...",
+                self._ws_reconnect_attempts,
+                WS_RECONNECT_MAX_ATTEMPTS,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    async def _ws_connect_and_consume(self) -> None:
+        """Single WS connection lifecycle: connect, auth, consume messages."""
         ws_url = self._http.ws_url(self._stream_id)
 
-        try:
-            self._ws = await self._http.ws_connect(ws_url)
-            await self._ws.send_json({"api_key": self._http.api_key})
-            logger.debug("WebSocket connected: %s", ws_url)
+        # Close stale WS reference
+        if self._ws is not None and not self._ws.closed:
+            await self._ws.close()
 
-            async for msg in self._ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    self._handle_ws_message(msg.data)
-                elif msg.type == aiohttp.WSMsgType.ERROR:
+        self._ws = await self._http.ws_connect(ws_url)
+        await self._ws.send_json({"api_key": self._http.api_key})
+        logger.debug("WebSocket connected: %s", ws_url)
+
+        async for msg in self._ws:
+            if self._closed:
+                return
+
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                self._handle_ws_message(msg.data)
+                # Reset reconnect counter on successful message
+                self._ws_reconnect_attempts = 0
+
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                # Don't treat as fatal — let the outer loop handle reconnect
+                logger.warning("WebSocket error: %s", self._ws.exception())
+                return
+
+            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING,
+                              aiohttp.WSMsgType.CLOSED):
+                if self._closed:
+                    return
+                if msg.data == 1008:
+                    # Auth failure — fatal, no reconnect
                     self._emit_error(
-                        WebSocketError(f"WebSocket error: {self._ws.exception()}")
+                        WebSocketError("WebSocket auth failed: invalid API key", code=1008)
                     )
-                    break
-                elif msg.type == aiohttp.WSMsgType.CLOSE:
-                    if msg.data == 1008:
-                        self._emit_error(
-                            WebSocketError("WebSocket auth failed: invalid API key", code=1008)
-                        )
-                    break
-
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self._emit_error(WebSocketError(f"WebSocket connection failed: {exc}"))
+                    asyncio.create_task(self.close(), name="overshoot-close-on-ws-auth")
+                    return
+                if msg.data == 1001 and msg.extra:
+                    # Server-initiated close with reason — fatal
+                    reason = str(msg.extra) if msg.extra else "server closed connection"
+                    self._emit_error(
+                        WebSocketError(f"Server closed WebSocket: {reason}", code=1001)
+                    )
+                    asyncio.create_task(self.close(), name="overshoot-close-on-ws-server")
+                    return
+                # Other close codes — let outer loop attempt reconnect
+                logger.info("WebSocket closed with code %s, will attempt reconnect", msg.data)
+                return
 
     def _handle_ws_message(self, raw: str) -> None:
         """Parse a WebSocket text message and call on_result."""
@@ -193,8 +274,16 @@ class Stream:
                 if self._closed:
                     break
                 try:
-                    await self._http.request("POST", f"/streams/{self._stream_id}/keepalive")
+                    data = await self._http.request(
+                        "POST", f"/streams/{self._stream_id}/keepalive"
+                    )
                     logger.debug("Lease renewed for stream %s", self._stream_id)
+
+                    # Refresh LiveKit token if present
+                    livekit_token = data.get("livekit_token")
+                    if livekit_token and self._livekit_transport is not None:
+                        self._livekit_transport.update_token(livekit_token)
+
                 except Exception as exc:
                     logger.error("Keepalive failed: %s", exc)
                     self._emit_error(exc)  # type: ignore[arg-type]

@@ -50,7 +50,17 @@ class CameraSource:
     device: str = "default"
 
 
-SourceConfig = Union[LiveKitSource, WebRTCSource, FileSource, CameraSource]
+@dataclass(frozen=True, slots=True)
+class NativeSource:
+    """Use server-managed LiveKit transport (default for local sources).
+
+    When passed as the source, the SDK omits the ``source`` field from the
+    API request. The server creates a LiveKit room and returns connection
+    details. Requires ``pip install overshoot[livekit]``.
+    """
+
+
+SourceConfig = Union[LiveKitSource, WebRTCSource, FileSource, CameraSource, NativeSource]
 
 # Wire-ready sources (accepted by ApiClient / sent directly to the API)
 WireSource = Union[LiveKitSource, WebRTCSource]
@@ -125,6 +135,14 @@ class Lease:
 
 
 @dataclass(frozen=True, slots=True)
+class LiveKitConnection:
+    """LiveKit room connection details returned for native transport streams."""
+
+    url: str
+    token: str
+
+
+@dataclass(frozen=True, slots=True)
 class StreamCreateResponse:
     """Response from POST /streams."""
 
@@ -132,6 +150,7 @@ class StreamCreateResponse:
     webrtc: Optional[WebRTCAnswer] = None
     lease: Optional[Lease] = None
     turn_servers: Optional[list[TurnServer]] = None
+    livekit: Optional[LiveKitConnection] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +163,7 @@ class KeepaliveResponse:
     credits_remaining_cents: Optional[float] = None
     cost_cents: Optional[float] = None
     seconds_charged: Optional[float] = None
+    livekit_token: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)

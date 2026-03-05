@@ -5,6 +5,7 @@ from ._constants import DEFAULT_BASE_URL
 from ._http import HttpClient
 from ._api_client import ApiClient
 from ._stream import Stream
+from ._sources import TransportType
 from ._streams_api import StreamsAPI
 
 # Source types
@@ -12,6 +13,7 @@ from .types import (
     CameraSource,
     FileSource,
     LiveKitSource,
+    NativeSource,
     WebRTCSource,
     SourceConfig,
     WireSource,
@@ -26,6 +28,7 @@ from .types import (
     ModelStatus,
     StreamStopReason,
     # Responses
+    LiveKitConnection,
     StreamCreateResponse,
     StreamInferenceResult,
     KeepaliveResponse,
@@ -103,9 +106,11 @@ __all__ = [
     "CameraSource",
     "FileSource",
     "LiveKitSource",
+    "NativeSource",
     "WebRTCSource",
     "SourceConfig",
     "WireSource",
+    "TransportType",
     # Processing
     "ClipProcessingConfig",
     "FrameProcessingConfig",
@@ -118,6 +123,7 @@ __all__ = [
     "ModelStatus",
     "StreamStopReason",
     # Responses
+    "LiveKitConnection",
     "StreamCreateResponse",
     "StreamInferenceResult",
     "KeepaliveResponse",

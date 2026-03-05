@@ -9,8 +9,10 @@ from .types import (
     InferenceConfig,
     KeepaliveResponse,
     Lease,
+    LiveKitConnection,
     LiveKitSource,
     ModelInfo,
+    NativeSource,
     ProcessingConfig,
     StatusResponse,
     StreamConfigResponse,
@@ -25,8 +27,13 @@ from .types import (
 logger = logging.getLogger("overshoot")
 
 
-def _serialize_source(source: WireSource) -> dict[str, Any]:
-    """Convert a wire-ready source to the API payload format."""
+def _serialize_source(source: Optional[WireSource]) -> Optional[dict[str, Any]]:
+    """Convert a wire-ready source to the API payload format.
+
+    Returns None for NativeSource (server creates LiveKit room).
+    """
+    if source is None or isinstance(source, NativeSource):
+        return None
     if isinstance(source, LiveKitSource):
         return {"type": "livekit", "url": source.url, "token": source.token}
     if isinstance(source, WebRTCSource):
@@ -64,11 +71,16 @@ def _parse_create_response(data: dict[str, Any]) -> StreamCreateResponse:
     if data.get("turn_servers"):
         turn_servers = [TurnServer(**ts) for ts in data["turn_servers"]]
 
+    livekit = None
+    if data.get("livekit"):
+        livekit = LiveKitConnection(**data["livekit"])
+
     return StreamCreateResponse(
         stream_id=data["stream_id"],
         webrtc=webrtc,
         lease=lease,
         turn_servers=turn_servers,
+        livekit=livekit,
     )
 
 
@@ -81,6 +93,7 @@ def _parse_keepalive_response(data: dict[str, Any]) -> KeepaliveResponse:
         credits_remaining_cents=data.get("credits_remaining_cents"),
         cost_cents=data.get("cost_cents"),
         seconds_charged=data.get("seconds_charged"),
+        livekit_token=data.get("livekit_token"),
     )
 
 
@@ -126,7 +139,7 @@ class ApiClient:
 
     async def create_stream(
         self,
-        source: WireSource,
+        source: Optional[WireSource],
         processing: ProcessingConfig,
         inference: InferenceConfig,
         *,
@@ -134,10 +147,12 @@ class ApiClient:
     ) -> StreamCreateResponse:
         """POST /streams — Create a new analysis stream."""
         body: dict[str, Any] = {
-            "source": _serialize_source(source),
             "processing": _serialize_processing(processing),
             "inference": _serialize_inference(inference),
         }
+        serialized_source = _serialize_source(source)
+        if serialized_source is not None:
+            body["source"] = serialized_source
         if mode is not None:
             body["mode"] = mode
 
