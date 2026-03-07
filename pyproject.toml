@@ -24,22 +24,11 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp>=3.9,<4",
-    "aiortc>=1.9.0",
     "livekit>=1.0.0",
-    "av>=12.0",
-    "numpy>=1.24",
 ]
-keywords = ["realtime", "vision", "ai", "video", "stream", "webrtc", "livekit", "computer-vision"]
+keywords = ["realtime", "vision", "ai", "video", "stream", "livekit", "computer-vision"]
 
 [project.optional-dependencies]
-livekit = [
-    "livekit>=1.0.0",
-    "av>=12.0",
-    "numpy>=1.24",
-]
-webrtc = [
-    "aiortc>=1.9.0",
-]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

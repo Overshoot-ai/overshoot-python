@@ -4,34 +4,31 @@ import json
 from overshoot import (
     CameraSource,
     ClipProcessingConfig,
-    FeedbackCreateRequest,
-    FeedbackResponse,
     FileSource,
+    FrameSource,
     FrameProcessingConfig,
+    HLSSource,
     InferenceConfig,
     KeepaliveResponse,
     Lease,
     LiveKitSource,
     ModelInfo,
+    RTMPSource,
+    RTSPSource,
     StatusResponse,
     StreamConfigResponse,
     StreamCreateResponse,
     StreamInferenceResult,
-    TurnServer,
-    WebRTCAnswer,
-    WebRTCSource,
 )
+
+
+# ── Source types ──────────────────────────────────────────────────────
 
 
 def test_livekit_source():
     s = LiveKitSource(url="wss://lk.example.com", token="tok-123")
     assert s.url == "wss://lk.example.com"
     assert s.token == "tok-123"
-
-
-def test_webrtc_source():
-    s = WebRTCSource(sdp="v=0\r\noffer")
-    assert s.sdp == "v=0\r\noffer"
 
 
 def test_file_source_defaults():
@@ -45,30 +42,70 @@ def test_file_source_loop():
     assert s.loop is True
 
 
+def test_rtsp_source():
+    s = RTSPSource(url="rtsp://192.168.1.10/stream")
+    assert s.url == "rtsp://192.168.1.10/stream"
+
+
+def test_hls_source():
+    s = HLSSource(url="https://example.com/live.m3u8")
+    assert s.url == "https://example.com/live.m3u8"
+
+
+def test_rtmp_source():
+    s = RTMPSource(url="rtmp://example.com/live/stream")
+    assert s.url == "rtmp://example.com/live/stream"
+
+
 def test_camera_source_default():
     s = CameraSource()
     assert s.device == "default"
+    assert s.width == 1280
+    assert s.height == 720
 
 
 def test_camera_source_custom():
-    s = CameraSource(device="/dev/video1")
+    s = CameraSource(device="/dev/video1", width=1920, height=1080)
     assert s.device == "/dev/video1"
+    assert s.width == 1920
+    assert s.height == 1080
+
+
+def test_frame_source():
+    s = FrameSource(width=640, height=480)
+    assert s.width == 640
+    assert s.height == 480
+
+
+def test_frame_source_push_before_connect_raises():
+    s = FrameSource(width=640, height=480)
+    try:
+        s.push_frame(b"\x00" * (640 * 480 * 4))
+        assert False, "Should have raised RuntimeError"
+    except RuntimeError as e:
+        assert "not connected" in str(e)
+
+
+def test_frame_source_push_wrong_size_raises():
+    """push_frame should raise ValueError for wrong-sized data."""
+    s = FrameSource(width=2, height=2)
+    # Simulate connected state
+    from unittest.mock import MagicMock
+    s._livekit_video_source = MagicMock()
+
+    try:
+        s.push_frame(b"\x00" * 10)  # wrong size (should be 2*2*4=16)
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "mismatch" in str(e)
+
+
+# ── Processing configs ───────────────────────────────────────────────
 
 
 def test_clip_processing_config_target_fps():
     c = ClipProcessingConfig(target_fps=6)
     assert c.target_fps == 6
-    assert c.sampling_ratio is None
-    assert c.fps is None
-    assert c.clip_length_seconds == 0.5
-    assert c.delay_seconds == 0.5
-
-
-def test_clip_processing_config_legacy():
-    c = ClipProcessingConfig(sampling_ratio=0.5, fps=30)
-    assert c.sampling_ratio == 0.5
-    assert c.fps == 30
-    assert c.target_fps is None
     assert c.clip_length_seconds == 0.5
     assert c.delay_seconds == 0.5
 
@@ -78,39 +115,38 @@ def test_frame_processing_config():
     assert f.interval_seconds == 3.0
 
 
-def test_inference_config_defaults():
-    i = InferenceConfig(prompt="Describe")
+# ── Inference config ─────────────────────────────────────────────────
+
+
+def test_inference_config():
+    i = InferenceConfig(prompt="Describe", model="Qwen/Qwen3.5-9B")
     assert i.prompt == "Describe"
-    assert i.backend == "overshoot"
-    assert i.model == "Qwen/Qwen3-VL-30B-A3B-Instruct"
+    assert i.model == "Qwen/Qwen3.5-9B"
     assert i.output_schema_json is None
     assert i.max_output_tokens is None
 
 
 def test_inference_config_max_output_tokens():
-    i = InferenceConfig(prompt="Describe", max_output_tokens=512)
+    i = InferenceConfig(prompt="Describe", model="test-model", max_output_tokens=512)
     assert i.max_output_tokens == 512
+
+
+# ── Response types ───────────────────────────────────────────────────
 
 
 def test_stream_create_response():
     r = StreamCreateResponse(
         stream_id="abc-123",
-        webrtc=WebRTCAnswer(type="answer", sdp="v=0\r\nanswer"),
-        lease=Lease(ttl_seconds=30),
-        turn_servers=[TurnServer(urls="turn:example.com", username="u", credential="c")],
+        lease=Lease(ttl_seconds=45),
     )
     assert r.stream_id == "abc-123"
-    assert r.webrtc is not None
-    assert r.webrtc.sdp == "v=0\r\nanswer"
     assert r.lease is not None
-    assert r.lease.ttl_seconds == 30
-    assert r.turn_servers is not None
-    assert len(r.turn_servers) == 1
+    assert r.lease.ttl_seconds == 45
 
 
 def test_keepalive_response():
-    k = KeepaliveResponse(status="ok", stream_id="abc", ttl_seconds=30, cost_cents=0.05)
-    assert k.ttl_seconds == 30
+    k = KeepaliveResponse(status="ok", stream_id="abc", ttl_seconds=45, cost_cents=0.05)
+    assert k.ttl_seconds == 45
     assert k.cost_cents == 0.05
     assert k.credits_remaining_cents is None
     assert k.seconds_charged is None
@@ -118,14 +154,14 @@ def test_keepalive_response():
 
 def test_keepalive_response_seconds_charged():
     k = KeepaliveResponse(
-        status="ok", stream_id="abc", ttl_seconds=30, seconds_charged=5.2
+        status="ok", stream_id="abc", ttl_seconds=45, seconds_charged=5.2
     )
     assert k.seconds_charged == 5.2
 
 
 def test_stream_config_response():
     c = StreamConfigResponse(
-        id="cfg-1", stream_id="str-1", prompt="test", backend="overshoot", model="Qwen"
+        id="cfg-1", stream_id="str-1", prompt="test", model="Qwen"
     )
     assert c.prompt == "test"
 
@@ -140,7 +176,6 @@ def test_stream_inference_result_ok():
         id="res-1",
         stream_id="str-1",
         mode="clip",
-        model_backend="overshoot",
         model_name="Qwen",
         prompt="test",
         result="a car is visible",
@@ -159,7 +194,6 @@ def test_stream_inference_result_with_finish_reason():
         id="res-1",
         stream_id="str-1",
         mode="clip",
-        model_backend="overshoot",
         model_name="Qwen",
         prompt="test",
         result="a car is visible",
@@ -176,8 +210,7 @@ def test_stream_inference_result_error():
         id="res-2",
         stream_id="str-1",
         mode="frame",
-        model_backend="gemini",
-        model_name="gemini-pro",
+        model_name="test-model",
         prompt="test",
         result="",
         inference_latency_ms=0,
@@ -195,7 +228,6 @@ def test_result_json():
         id="res-3",
         stream_id="str-1",
         mode="clip",
-        model_backend="overshoot",
         model_name="Qwen",
         prompt="count objects",
         result=json.dumps(data),
@@ -213,7 +245,6 @@ def test_result_json_invalid():
         id="res-4",
         stream_id="str-1",
         mode="clip",
-        model_backend="overshoot",
         model_name="Qwen",
         prompt="test",
         result="not valid json",
@@ -229,7 +260,7 @@ def test_result_json_invalid():
 
 
 def test_frozen_dataclasses():
-    """Dataclasses should be immutable."""
+    """Frozen dataclasses should be immutable."""
     s = LiveKitSource(url="wss://test", token="tok")
     try:
         s.url = "changed"  # type: ignore[misc]
@@ -239,8 +270,8 @@ def test_frozen_dataclasses():
 
 
 def test_model_info():
-    m = ModelInfo(model="Qwen/Qwen3-VL-30B-A3B-Instruct", ready=True, status="ready")
-    assert m.model == "Qwen/Qwen3-VL-30B-A3B-Instruct"
+    m = ModelInfo(model="Qwen/Qwen3.5-9B", ready=True, status="ready")
+    assert m.model == "Qwen/Qwen3.5-9B"
     assert m.ready is True
     assert m.status == "ready"
 
@@ -249,32 +280,3 @@ def test_model_info_unavailable():
     m = ModelInfo(model="some-model", ready=False, status="unavailable")
     assert m.ready is False
     assert m.status == "unavailable"
-
-
-def test_feedback_create_request():
-    f = FeedbackCreateRequest(rating=5, category="quality", feedback="Great results")
-    assert f.rating == 5
-    assert f.category == "quality"
-    assert f.feedback == "Great results"
-
-
-def test_feedback_response():
-    f = FeedbackResponse(
-        id="fb-1",
-        stream_id="str-1",
-        rating=4,
-        category="accuracy",
-        feedback="Mostly correct",
-        created_at="2025-02-10T00:00:00Z",
-    )
-    assert f.id == "fb-1"
-    assert f.stream_id == "str-1"
-    assert f.rating == 4
-    assert f.created_at == "2025-02-10T00:00:00Z"
-
-
-def test_feedback_response_defaults():
-    f = FeedbackResponse(
-        id="fb-2", stream_id="str-2", rating=3, category="speed", feedback="Slow"
-    )
-    assert f.created_at is None

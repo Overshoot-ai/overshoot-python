@@ -5,22 +5,17 @@ from typing import Any, Optional
 from ._constants import DEFAULT_BASE_URL
 from ._http import HttpClient
 from .types import (
-    FeedbackResponse,
     InferenceConfig,
     KeepaliveResponse,
     Lease,
     LiveKitConnection,
     LiveKitSource,
     ModelInfo,
-    NativeSource,
     ProcessingConfig,
     StatusResponse,
     StreamConfigResponse,
     StreamCreateResponse,
     StreamMode,
-    TurnServer,
-    WebRTCAnswer,
-    WebRTCSource,
     WireSource,
 )
 
@@ -30,23 +25,17 @@ logger = logging.getLogger("overshoot")
 def _serialize_source(source: Optional[WireSource]) -> Optional[dict[str, Any]]:
     """Convert a wire-ready source to the API payload format.
 
-    Returns None for NativeSource (server creates LiveKit room).
+    Returns None when source is None (server creates LiveKit room).
     """
-    if source is None or isinstance(source, NativeSource):
+    if source is None:
         return None
     if isinstance(source, LiveKitSource):
         return {"type": "livekit", "url": source.url, "token": source.token}
-    if isinstance(source, WebRTCSource):
-        return {"type": "webrtc", "sdp": source.sdp}
     raise TypeError(f"Unsupported wire source type: {type(source)}")
 
 
 def _serialize_processing(processing: ProcessingConfig) -> dict[str, Any]:
-    """Convert a ProcessingConfig to the API payload format.
-
-    For ClipProcessingConfig, only sends the relevant fields (target_fps
-    or legacy fps/sampling_ratio), stripping None values.
-    """
+    """Convert a ProcessingConfig to the API payload format, stripping None values."""
     d = asdict(processing)
     return {k: v for k, v in d.items() if v is not None}
 
@@ -59,17 +48,9 @@ def _serialize_inference(inference: InferenceConfig) -> dict[str, Any]:
 
 def _parse_create_response(data: dict[str, Any]) -> StreamCreateResponse:
     """Parse the raw JSON dict into a StreamCreateResponse."""
-    webrtc = None
-    if data.get("webrtc"):
-        webrtc = WebRTCAnswer(**data["webrtc"])
-
     lease = None
     if data.get("lease"):
         lease = Lease(**data["lease"])
-
-    turn_servers = None
-    if data.get("turn_servers"):
-        turn_servers = [TurnServer(**ts) for ts in data["turn_servers"]]
 
     livekit = None
     if data.get("livekit"):
@@ -77,9 +58,7 @@ def _parse_create_response(data: dict[str, Any]) -> StreamCreateResponse:
 
     return StreamCreateResponse(
         stream_id=data["stream_id"],
-        webrtc=webrtc,
         lease=lease,
-        turn_servers=turn_servers,
         livekit=livekit,
     )
 
@@ -103,7 +82,6 @@ def _parse_config_response(data: dict[str, Any]) -> StreamConfigResponse:
         id=data["id"],
         stream_id=data["stream_id"],
         prompt=data["prompt"],
-        backend=data["backend"],
         model=data["model"],
         output_schema_json=data.get("output_schema_json"),
         created_at=data.get("created_at"),
@@ -122,7 +100,7 @@ class ApiClient:
 
     Usage::
 
-        api = overshoot.ApiClient(api_key="sk-...")
+        api = overshoot.ApiClient(api_key="ovs_...")
         resp = await api.create_stream(source=..., processing=..., inference=...)
         await api.close_stream(resp.stream_id)
         await api.close()
@@ -196,37 +174,6 @@ class ApiClient:
         data = await self._http.request("GET", "/healthz")
         status: str = data.get("status", "ok") if isinstance(data, dict) else "ok"
         return status
-
-    async def submit_feedback(
-        self,
-        stream_id: str,
-        rating: int,
-        category: str,
-        feedback: str,
-    ) -> StatusResponse:
-        """POST /streams/{stream_id}/feedback — Submit feedback for a stream."""
-        data = await self._http.request(
-            "POST",
-            f"/streams/{stream_id}/feedback",
-            json_body={"rating": rating, "category": category, "feedback": feedback},
-        )
-        return StatusResponse(status=data.get("status", "ok"))
-
-    async def get_feedback(self) -> list[FeedbackResponse]:
-        """GET /streams/feedback — List all submitted feedback."""
-        data = await self._http.request("GET", "/streams/feedback")
-        items: list[dict[str, Any]] = data if isinstance(data, list) else data.get("feedback", [])
-        return [
-            FeedbackResponse(
-                id=f["id"],
-                stream_id=f["stream_id"],
-                rating=f["rating"],
-                category=f["category"],
-                feedback=f["feedback"],
-                created_at=f.get("created_at"),
-            )
-            for f in items
-        ]
 
     async def close(self) -> None:
         """Close the underlying HTTP session."""

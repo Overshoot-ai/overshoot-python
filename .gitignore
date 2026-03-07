@@ -1,2 +1,6 @@
 *__pycache__*
 .claude
+.venv/
+*.egg-info/
+dist/
+build/

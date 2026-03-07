@@ -5,16 +5,17 @@ from ._constants import DEFAULT_BASE_URL
 from ._http import HttpClient
 from ._api_client import ApiClient
 from ._stream import Stream
-from ._sources import TransportType
 from ._streams_api import StreamsAPI
 
 # Source types
 from .types import (
     CameraSource,
     FileSource,
+    FrameSource,
+    HLSSource,
     LiveKitSource,
-    NativeSource,
-    WebRTCSource,
+    RTMPSource,
+    RTSPSource,
     SourceConfig,
     WireSource,
     # Processing
@@ -23,7 +24,6 @@ from .types import (
     ProcessingConfig,
     InferenceConfig,
     StreamMode,
-    ModelBackend,
     FinishReason,
     ModelStatus,
     StreamStopReason,
@@ -34,12 +34,8 @@ from .types import (
     KeepaliveResponse,
     StreamConfigResponse,
     StatusResponse,
-    WebRTCAnswer,
-    TurnServer,
     Lease,
     ModelInfo,
-    FeedbackCreateRequest,
-    FeedbackResponse,
 )
 
 # Errors
@@ -57,27 +53,54 @@ from .errors import (
 )
 
 
-class Overshoot:
-    """Overshoot API client.
+async def get_models(
+    api_key: str,
+    *,
+    base_url: str = DEFAULT_BASE_URL,
+    timeout: float = 30.0,
+) -> list[ModelInfo]:
+    """Fetch available models and their status.
 
-    High-level entry point for real-time video analysis. Use
-    ``client.streams.create()`` to start a stream with automatic
-    keepalive and WebSocket result delivery.
+    Convenience function that creates a temporary client, fetches
+    models, and closes the client. For repeated calls, use
+    :meth:`ApiClient.get_models` directly.
+
+    Usage::
+
+        models = await overshoot.get_models(api_key="ovs_...")
+        ready = [m for m in models if m.ready]
+    """
+    client = ApiClient(api_key, base_url=base_url, timeout=timeout)
+    try:
+        return await client.get_models()
+    finally:
+        await client.close()
+
+
+class Overshoot:
+    """Overshoot API client — high-level entry point.
+
+    Manages an HTTP session and provides ``client.streams`` for creating
+    streams with automatic keepalive and WebSocket result delivery.
 
     Usage::
 
         import overshoot
 
-        client = overshoot.Overshoot(api_key="sk-...")
+        client = overshoot.Overshoot(api_key="ovs_...")
 
         stream = await client.streams.create(
             source=overshoot.CameraSource(),
             prompt="Describe what you see",
+            model="Qwen/Qwen3.5-9B",
             on_result=lambda r: print(r.result),
         )
 
         await stream.close()
         await client.close()
+
+    For direct HTTP control without background tasks, use
+    :class:`ApiClient` instead.
     """
 
     def __init__(
@@ -102,22 +125,24 @@ __all__ = [
     "Overshoot",
     "ApiClient",
     "Stream",
+    # Utility
+    "get_models",
     # Sources
     "CameraSource",
     "FileSource",
+    "FrameSource",
+    "HLSSource",
     "LiveKitSource",
-    "NativeSource",
-    "WebRTCSource",
+    "RTMPSource",
+    "RTSPSource",
     "SourceConfig",
     "WireSource",
-    "TransportType",
     # Processing
     "ClipProcessingConfig",
     "FrameProcessingConfig",
     "ProcessingConfig",
     "InferenceConfig",
     "StreamMode",
-    "ModelBackend",
     # Type aliases
     "FinishReason",
     "ModelStatus",
@@ -129,12 +154,8 @@ __all__ = [
     "KeepaliveResponse",
     "StreamConfigResponse",
     "StatusResponse",
-    "WebRTCAnswer",
-    "TurnServer",
     "Lease",
     "ModelInfo",
-    "FeedbackCreateRequest",
-    "FeedbackResponse",
     # Errors
     "OvershootError",
     "ApiError",

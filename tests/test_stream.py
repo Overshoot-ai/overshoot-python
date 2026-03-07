@@ -14,7 +14,7 @@ def _make_stream(
     api_key: str = "test-key",
     base_url: str = "https://test.overshoot.ai/api/v0.2",
     stream_id: str = "str-test",
-    ttl_seconds: int = 30,
+    ttl_seconds: int = 45,
     on_result: MagicMock | None = None,
     on_error: MagicMock | None = None,
 ) -> tuple[Stream, HttpClient]:
@@ -42,7 +42,6 @@ def test_stream_properties():
 async def test_stream_close_is_idempotent():
     stream, http = _make_stream()
 
-    # Mock the HTTP request for DELETE
     http.request = AsyncMock(return_value={"status": "ok"})
 
     await stream.close()
@@ -74,7 +73,6 @@ async def test_update_prompt_calls_api():
         "id": "cfg-1",
         "stream_id": "str-test",
         "prompt": "updated",
-        "backend": "overshoot",
         "model": "Qwen",
     })
 
@@ -87,12 +85,11 @@ async def test_update_prompt_calls_api():
         json_body={"prompt": "updated"},
     )
 
-    # Clean up without hitting the real API
     stream._closed = True
     await http.close()
 
 
-def test_handle_ws_message_parses_finish_reason():
+def test_handle_ws_message_parses_result():
     on_result = MagicMock()
     stream, http = _make_stream(on_result=on_result)
 
@@ -102,7 +99,6 @@ def test_handle_ws_message_parses_finish_reason():
         "id": "res-1",
         "stream_id": "str-test",
         "mode": "clip",
-        "model_backend": "overshoot",
         "model_name": "Qwen",
         "prompt": "test",
         "result": "hello",
@@ -116,6 +112,7 @@ def test_handle_ws_message_parses_finish_reason():
     on_result.assert_called_once()
     result = on_result.call_args[0][0]
     assert result.finish_reason == "stop"
+    assert result.model_name == "Qwen"
 
 
 def test_handle_ws_message_finish_reason_absent():
@@ -128,7 +125,6 @@ def test_handle_ws_message_finish_reason_absent():
         "id": "res-2",
         "stream_id": "str-test",
         "mode": "frame",
-        "model_backend": "overshoot",
         "model_name": "Qwen",
         "prompt": "test",
         "result": "world",

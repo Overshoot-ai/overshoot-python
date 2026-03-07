@@ -1,30 +1,16 @@
 """Native LiveKit transport — connects to a server-managed LiveKit room and publishes video.
 
-Requires ``pip install overshoot[livekit]`` (the ``livekit`` package).
+Requires the ``livekit`` package (``pip install overshoot[livekit]``).
 """
 
 import logging
 from typing import Any, Callable, Optional
 
+from livekit import rtc as livekit_rtc
+
 from .errors import OvershootError
 
 logger = logging.getLogger("overshoot")
-
-try:
-    from livekit import rtc as livekit_rtc
-
-    HAS_LIVEKIT = True
-except ImportError:
-    HAS_LIVEKIT = False
-    livekit_rtc = None  # type: ignore[assignment]
-
-
-def _require_livekit() -> None:
-    if not HAS_LIVEKIT:
-        raise OvershootError(
-            "Native LiveKit transport requires the livekit package. "
-            "Install with: pip install overshoot[livekit]"
-        )
 
 
 class LiveKitTransport:
@@ -39,8 +25,7 @@ class LiveKitTransport:
         *,
         on_fatal_error: Optional[Callable[[Exception], Any]] = None,
     ) -> None:
-        _require_livekit()
-        self._room: Optional[Any] = None
+        self._room: Optional[livekit_rtc.Room] = None
         self._token: Optional[str] = None
         self._on_fatal_error = on_fatal_error
         self._connected = False
@@ -51,22 +36,11 @@ class LiveKitTransport:
         token: str,
         video_track: Any,
     ) -> None:
-        """Connect to a LiveKit room and publish the video track.
-
-        Parameters
-        ----------
-        url:
-            LiveKit server WebSocket URL.
-        token:
-            Client JWT token (publish-only, 5-min TTL).
-        video_track:
-            A ``livekit.rtc.LocalVideoTrack`` to publish.
-        """
+        """Connect to a LiveKit room and publish the video track."""
         self._token = token
 
         room = livekit_rtc.Room()
 
-        # Wire up reconnection events
         @room.on("reconnecting")
         def _on_reconnecting() -> None:
             logger.warning("LiveKit room reconnecting...")
@@ -85,14 +59,14 @@ class LiveKitTransport:
                     OvershootError(f"LiveKit room disconnected: {reason}")
                 )
 
-        # Connect with default options — matches official LiveKit Python examples.
-        # LiveKit Cloud provides ICE/TURN servers automatically.
-        await room.connect(url, token)
+        # single_peer_connection=True is required for the Rust WebRTC stack
+        opts = livekit_rtc.RoomOptions(single_peer_connection=True)
+        await room.connect(url, token, options=opts)
         self._room = room
         self._connected = True
         logger.info("Connected to LiveKit room %s", room.name)
 
-        # Publish video track — matches official publish_hue.py pattern
+        # Publish video track
         options = livekit_rtc.TrackPublishOptions(
             source=livekit_rtc.TrackSource.SOURCE_CAMERA,
         )

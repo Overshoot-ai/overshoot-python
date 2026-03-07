@@ -8,24 +8,19 @@ from ._api_client import (
     _serialize_source,
 )
 from ._constants import (
-    DEFAULT_BACKEND,
     DEFAULT_CLIP_LENGTH_SECONDS,
     DEFAULT_DELAY_SECONDS,
-    DEFAULT_FPS,
     DEFAULT_INTERVAL_SECONDS,
-    DEFAULT_MODEL,
-    DEFAULT_SAMPLING_RATIO,
     DEFAULT_TARGET_FPS,
 )
 from ._http import HttpClient
-from ._livekit_transport import LiveKitTransport, HAS_LIVEKIT
-from ._sources import TransportType, resolve_source
+from ._livekit_transport import LiveKitTransport
+from ._sources import resolve_source
 from ._stream import Stream
 from .types import (
     ClipProcessingConfig,
     FrameProcessingConfig,
     InferenceConfig,
-    ModelBackend,
     ProcessingConfig,
     SourceConfig,
     StreamInferenceResult,
@@ -48,85 +43,72 @@ class StreamsAPI:
         self,
         source: SourceConfig,
         prompt: str,
+        model: str,
         on_result: Callable[[StreamInferenceResult], Any],
         *,
         on_error: Optional[Callable[[Exception], Any]] = None,
         mode: Optional[StreamMode] = None,
-        backend: ModelBackend = DEFAULT_BACKEND,
-        model: str = DEFAULT_MODEL,
         output_schema: Optional[dict[str, Any]] = None,
         max_output_tokens: Optional[int] = None,
         # Clip mode params
         target_fps: Optional[int] = None,
         clip_length_seconds: Optional[float] = None,
         delay_seconds: Optional[float] = None,
-        # Legacy clip mode params (deprecated — use target_fps)
-        sampling_ratio: Optional[float] = None,
-        fps: Optional[int] = None,
         # Frame mode params
         interval_seconds: Optional[float] = None,
-        # Transport selection
-        transport: TransportType = "auto",
     ) -> Stream:
         """Create and start a new analysis stream.
 
-        Resolves the source (creating a WebRTC peer connection or preparing
-        a LiveKit video track), calls the API, starts background keepalive
+        Resolves the source (creating an FFmpeg pipeline and LiveKit video
+        track for local sources), calls the API, starts background keepalive
         and WebSocket consumer tasks, and returns a running :class:`Stream`.
 
         Parameters
         ----------
         source:
             Video source — ``CameraSource``, ``FileSource``,
-            ``LiveKitSource``, ``WebRTCSource``, or ``NativeSource``.
+            ``RTSPSource``, ``HLSSource``, ``RTMPSource``,
+            ``FrameSource``, or ``LiveKitSource``.
         prompt:
             The analysis task to run on each video segment.
+        model:
+            Model name for inference. Use ``get_models()`` to list
+            available models.
         on_result:
             Callback invoked for each inference result.
         on_error:
             Optional callback for errors (keepalive failure, WS errors).
         mode:
             ``"clip"`` or ``"frame"``. Auto-detected from params if not set.
-        backend:
-            Model backend (``"overshoot"`` or ``"gemini"``).
-        model:
-            Model name for inference.
         output_schema:
             Optional JSON schema for structured output.
+        max_output_tokens:
+            Cap tokens per inference request.
         target_fps:
-            Clip mode: target frame sampling rate (1–30). Preferred over
-            ``fps`` + ``sampling_ratio``.
+            Clip mode: target frame sampling rate (1-30).
         clip_length_seconds:
             Clip mode: duration of each clip.
         delay_seconds:
             Clip mode: delay between clips.
-        sampling_ratio:
-            *Deprecated* — use ``target_fps`` instead.
-            Clip mode: fraction of frames to sample (0.0–1.0).
-        fps:
-            *Deprecated* — use ``target_fps`` instead.
-            Clip mode: frames per second.
         interval_seconds:
             Frame mode: seconds between frame captures.
-        transport:
-            Transport selection for local sources (Camera/File).
-            ``"auto"`` (default): uses LiveKit if installed, else aiortc WebRTC.
-            ``"livekit"``: forces native LiveKit transport.
-            ``"webrtc"``: forces legacy aiortc WebRTC transport.
         """
-        # 1. Resolve source (may create WebRTC peer connection or LiveKit video track)
-        resolved = await resolve_source(source, transport=transport)
-
-        # 2. Build processing config
+        # 1. Build processing config (needed before resolve for target_fps)
         processing = self._build_processing(
             mode=mode,
             target_fps=target_fps,
             clip_length_seconds=clip_length_seconds,
             delay_seconds=delay_seconds,
-            sampling_ratio=sampling_ratio,
-            fps=fps,
             interval_seconds=interval_seconds,
         )
+
+        # Determine effective target_fps for FFmpeg source
+        effective_fps = DEFAULT_TARGET_FPS
+        if isinstance(processing, ClipProcessingConfig) and processing.target_fps:
+            effective_fps = processing.target_fps
+
+        # 2. Resolve source (may create FFmpeg + LiveKit video track)
+        resolved = await resolve_source(source, target_fps=effective_fps)
 
         # 3. Determine mode
         if mode is None:
@@ -135,13 +117,12 @@ class StreamsAPI:
         # 4. Build inference config
         inference = InferenceConfig(
             prompt=prompt,
-            backend=backend,
             model=model,
             output_schema_json=output_schema,
             max_output_tokens=max_output_tokens,
         )
 
-        # 5. Call API — omit source for native LiveKit transport
+        # 5. Call API
         body: dict[str, Any] = {
             "processing": _serialize_processing(processing),
             "inference": _serialize_inference(inference),
@@ -156,13 +137,9 @@ class StreamsAPI:
 
         logger.info("Stream created: %s", response.stream_id)
 
-        # 6. Apply SDP answer if we have a peer connection (legacy WebRTC)
-        if response.webrtc and resolved.peer_connection is not None:
-            await resolved.apply_answer(response.webrtc)
-
-        # 7. Connect LiveKit transport if server returned livekit connection
+        # 6. Connect LiveKit transport if server returned livekit connection
         livekit_transport: Optional[LiveKitTransport] = None
-        if response.livekit and resolved.is_native and HAS_LIVEKIT:
+        if response.livekit and resolved.is_native:
             livekit_transport = LiveKitTransport(
                 on_fatal_error=on_error,
             )
@@ -172,7 +149,7 @@ class StreamsAPI:
                 video_track=resolved.livekit_video_track,
             )
 
-        # 8. Build and start the Stream
+        # 7. Build and start the Stream
         ttl = response.lease.ttl_seconds if response.lease else 0
 
         stream = Stream(
@@ -195,8 +172,6 @@ class StreamsAPI:
         target_fps: Optional[int],
         clip_length_seconds: Optional[float],
         delay_seconds: Optional[float],
-        sampling_ratio: Optional[float],
-        fps: Optional[int],
         interval_seconds: Optional[float],
     ) -> ProcessingConfig:
         """Build the processing config from flat params."""
@@ -207,24 +182,6 @@ class StreamsAPI:
             )
 
         # Clip mode (default)
-        has_legacy = sampling_ratio is not None or fps is not None
-
-        # Legacy format: only when user explicitly provides fps or sampling_ratio
-        if has_legacy:
-            return ClipProcessingConfig(
-                sampling_ratio=sampling_ratio if sampling_ratio is not None else DEFAULT_SAMPLING_RATIO,
-                fps=fps if fps is not None else DEFAULT_FPS,
-                clip_length_seconds=(
-                    clip_length_seconds
-                    if clip_length_seconds is not None
-                    else DEFAULT_CLIP_LENGTH_SECONDS
-                ),
-                delay_seconds=(
-                    delay_seconds if delay_seconds is not None else DEFAULT_DELAY_SECONDS
-                ),
-            )
-
-        # Default: target_fps format
         return ClipProcessingConfig(
             target_fps=target_fps if target_fps is not None else DEFAULT_TARGET_FPS,
             clip_length_seconds=(

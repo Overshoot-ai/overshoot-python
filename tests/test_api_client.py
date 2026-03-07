@@ -8,7 +8,6 @@ from overshoot import (
     FrameProcessingConfig,
     InferenceConfig,
     LiveKitSource,
-    WebRTCSource,
 )
 from overshoot.errors import (
     AuthenticationError,
@@ -36,43 +35,14 @@ def mock_api():
 
 
 @pytest.mark.asyncio
-async def test_create_stream_webrtc(mock_api, api_key, base_url):
-    mock_api.post(
-        f"{base_url}/streams",
-        payload={
-            "stream_id": "str-abc",
-            "webrtc": {"type": "answer", "sdp": "v=0\r\nanswer"},
-            "lease": {"ttl_seconds": 30},
-            "turn_servers": [
-                {"urls": "turn:example.com:3478", "username": "u", "credential": "c"}
-            ],
-        },
-        status=201,
-    )
-
-    api = ApiClient(api_key, base_url=base_url)
-    try:
-        resp = await api.create_stream(
-            source=WebRTCSource(sdp="v=0\r\noffer"),
-            processing=ClipProcessingConfig(target_fps=6),
-            inference=InferenceConfig(prompt="Test prompt"),
-        )
-        assert resp.stream_id == "str-abc"
-        assert resp.webrtc is not None
-        assert resp.webrtc.sdp == "v=0\r\nanswer"
-        assert resp.lease is not None
-        assert resp.lease.ttl_seconds == 30
-        assert resp.turn_servers is not None
-        assert len(resp.turn_servers) == 1
-    finally:
-        await api.close()
-
-
-@pytest.mark.asyncio
 async def test_create_stream_livekit(mock_api, api_key, base_url):
     mock_api.post(
         f"{base_url}/streams",
-        payload={"stream_id": "str-lk", "lease": {"ttl_seconds": 60}},
+        payload={
+            "stream_id": "str-lk",
+            "livekit": {"url": "wss://lk.test", "token": "tok"},
+            "lease": {"ttl_seconds": 45},
+        },
         status=201,
     )
 
@@ -81,11 +51,38 @@ async def test_create_stream_livekit(mock_api, api_key, base_url):
         resp = await api.create_stream(
             source=LiveKitSource(url="wss://lk.test", token="tok"),
             processing=FrameProcessingConfig(interval_seconds=2.0),
-            inference=InferenceConfig(prompt="Test"),
+            inference=InferenceConfig(prompt="Test", model="Qwen/Qwen3.5-9B"),
             mode="frame",
         )
         assert resp.stream_id == "str-lk"
-        assert resp.webrtc is None
+        assert resp.livekit is not None
+        assert resp.livekit.url == "wss://lk.test"
+    finally:
+        await api.close()
+
+
+@pytest.mark.asyncio
+async def test_create_stream_native(mock_api, api_key, base_url):
+    mock_api.post(
+        f"{base_url}/streams",
+        payload={
+            "stream_id": "str-native",
+            "livekit": {"url": "wss://lk.overshoot.ai", "token": "server-tok"},
+            "lease": {"ttl_seconds": 45},
+        },
+        status=201,
+    )
+
+    api = ApiClient(api_key, base_url=base_url)
+    try:
+        resp = await api.create_stream(
+            source=None,
+            processing=ClipProcessingConfig(target_fps=6),
+            inference=InferenceConfig(prompt="Test", model="Qwen/Qwen3.5-9B"),
+            mode="clip",
+        )
+        assert resp.stream_id == "str-native"
+        assert resp.livekit is not None
     finally:
         await api.close()
 
@@ -97,7 +94,7 @@ async def test_keepalive(mock_api, api_key, base_url):
         payload={
             "status": "ok",
             "stream_id": "str-1",
-            "ttl_seconds": 30,
+            "ttl_seconds": 45,
             "credits_remaining_cents": 500,
             "cost_cents": 0.05,
         },
@@ -107,7 +104,7 @@ async def test_keepalive(mock_api, api_key, base_url):
     try:
         resp = await api.keepalive("str-1")
         assert resp.status == "ok"
-        assert resp.ttl_seconds == 30
+        assert resp.ttl_seconds == 45
         assert resp.credits_remaining_cents == 500
         assert resp.cost_cents == 0.05
         assert resp.seconds_charged is None
@@ -116,21 +113,21 @@ async def test_keepalive(mock_api, api_key, base_url):
 
 
 @pytest.mark.asyncio
-async def test_keepalive_with_seconds_charged(mock_api, api_key, base_url):
+async def test_keepalive_with_livekit_token(mock_api, api_key, base_url):
     mock_api.post(
         f"{base_url}/streams/str-1/keepalive",
         payload={
             "status": "ok",
             "stream_id": "str-1",
-            "ttl_seconds": 30,
-            "seconds_charged": 15.5,
+            "ttl_seconds": 45,
+            "livekit_token": "refreshed-token",
         },
     )
 
     api = ApiClient(api_key, base_url=base_url)
     try:
         resp = await api.keepalive("str-1")
-        assert resp.seconds_charged == 15.5
+        assert resp.livekit_token == "refreshed-token"
     finally:
         await api.close()
 
@@ -143,8 +140,7 @@ async def test_update_prompt(mock_api, api_key, base_url):
             "id": "cfg-1",
             "stream_id": "str-1",
             "prompt": "new prompt",
-            "backend": "overshoot",
-            "model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+            "model": "Qwen/Qwen3.5-9B",
         },
     )
 
@@ -172,15 +168,12 @@ async def test_close_stream(mock_api, api_key, base_url):
         await api.close()
 
 
-# ── New endpoint tests ────────────────────────────────────────────────
-
-
 @pytest.mark.asyncio
 async def test_get_models(mock_api, api_key, base_url):
     mock_api.get(
         f"{base_url}/models",
         payload=[
-            {"model": "Qwen/Qwen3-VL-30B-A3B-Instruct", "ready": True, "status": "ready"},
+            {"model": "Qwen/Qwen3.5-9B", "ready": True, "status": "ready"},
             {"model": "Qwen/Qwen3-VL-8B-Instruct", "ready": False, "status": "unavailable"},
         ],
     )
@@ -189,7 +182,7 @@ async def test_get_models(mock_api, api_key, base_url):
     try:
         models = await api.get_models()
         assert len(models) == 2
-        assert models[0].model == "Qwen/Qwen3-VL-30B-A3B-Instruct"
+        assert models[0].model == "Qwen/Qwen3.5-9B"
         assert models[0].ready is True
         assert models[0].status == "ready"
         assert models[1].ready is False
@@ -213,56 +206,6 @@ async def test_health_check(mock_api, api_key, base_url):
         await api.close()
 
 
-@pytest.mark.asyncio
-async def test_submit_feedback(mock_api, api_key, base_url):
-    mock_api.post(
-        f"{base_url}/streams/str-1/feedback",
-        payload={"status": "ok"},
-    )
-
-    api = ApiClient(api_key, base_url=base_url)
-    try:
-        resp = await api.submit_feedback(
-            stream_id="str-1",
-            rating=5,
-            category="quality",
-            feedback="Excellent results",
-        )
-        assert resp.status == "ok"
-    finally:
-        await api.close()
-
-
-@pytest.mark.asyncio
-async def test_get_feedback(mock_api, api_key, base_url):
-    mock_api.get(
-        f"{base_url}/streams/feedback",
-        payload=[
-            {
-                "id": "fb-1",
-                "stream_id": "str-1",
-                "rating": 5,
-                "category": "quality",
-                "feedback": "Great",
-                "created_at": "2025-02-10T00:00:00Z",
-            },
-        ],
-    )
-
-    api = ApiClient(api_key, base_url=base_url)
-    try:
-        feedback = await api.get_feedback()
-        assert len(feedback) == 1
-        assert feedback[0].id == "fb-1"
-        assert feedback[0].stream_id == "str-1"
-        assert feedback[0].rating == 5
-        assert feedback[0].category == "quality"
-        assert feedback[0].feedback == "Great"
-        assert feedback[0].created_at == "2025-02-10T00:00:00Z"
-    finally:
-        await api.close()
-
-
 # ── Error mapping tests ──────────────────────────────────────────────
 
 
@@ -278,9 +221,9 @@ async def test_401_raises_authentication_error(mock_api, api_key, base_url):
     try:
         with pytest.raises(AuthenticationError):
             await api.create_stream(
-                source=WebRTCSource(sdp="v=0"),
+                source=LiveKitSource(url="wss://test", token="tok"),
                 processing=ClipProcessingConfig(target_fps=6),
-                inference=InferenceConfig(prompt="test"),
+                inference=InferenceConfig(prompt="test", model="test-model"),
             )
     finally:
         await api.close()
@@ -298,9 +241,9 @@ async def test_402_raises_insufficient_credits(mock_api, api_key, base_url):
     try:
         with pytest.raises(InsufficientCreditsError):
             await api.create_stream(
-                source=WebRTCSource(sdp="v=0"),
+                source=LiveKitSource(url="wss://test", token="tok"),
                 processing=ClipProcessingConfig(target_fps=6),
-                inference=InferenceConfig(prompt="test"),
+                inference=InferenceConfig(prompt="test", model="test-model"),
             )
     finally:
         await api.close()
@@ -334,9 +277,9 @@ async def test_422_raises_validation_error(mock_api, api_key, base_url):
     try:
         with pytest.raises(ValidationError):
             await api.create_stream(
-                source=WebRTCSource(sdp="v=0"),
+                source=LiveKitSource(url="wss://test", token="tok"),
                 processing=ClipProcessingConfig(target_fps=6),
-                inference=InferenceConfig(prompt="test"),
+                inference=InferenceConfig(prompt="test", model="test-model"),
             )
     finally:
         await api.close()
@@ -354,9 +297,9 @@ async def test_500_raises_server_error(mock_api, api_key, base_url):
     try:
         with pytest.raises(ServerError):
             await api.create_stream(
-                source=WebRTCSource(sdp="v=0"),
+                source=LiveKitSource(url="wss://test", token="tok"),
                 processing=ClipProcessingConfig(target_fps=6),
-                inference=InferenceConfig(prompt="test"),
+                inference=InferenceConfig(prompt="test", model="test-model"),
             )
     finally:
         await api.close()

@@ -3,10 +3,9 @@ from dataclasses import dataclass
 from typing import Any, Literal, Optional, Union
 
 
-# ── Stream mode / backend ────────────────────────────────────────────
+# ── Stream mode ─────────────────────────────────────────────────────
 
 StreamMode = Literal["clip", "frame"]
-ModelBackend = Literal["overshoot", "gemini"]
 FinishReason = Literal["stop", "length", "content_filter"]
 ModelStatus = Literal["unavailable", "ready", "degraded", "saturated"]
 StreamStopReason = Literal[
@@ -22,48 +21,174 @@ StreamStopReason = Literal[
 
 @dataclass(frozen=True, slots=True)
 class LiveKitSource:
-    """LiveKit room as the video source. No extra dependencies required."""
+    """User-managed LiveKit room as the video source.
+
+    Pass the LiveKit server URL and a publish-capable token.
+    You are responsible for publishing video to the room.
+    """
 
     url: str
     token: str
 
 
 @dataclass(frozen=True, slots=True)
-class WebRTCSource:
-    """Raw WebRTC SDP offer. User manages their own peer connection."""
-
-    sdp: str
-
-
-@dataclass(frozen=True, slots=True)
 class FileSource:
-    """Stream a local video file over WebRTC."""
+    """Stream a local video file via FFmpeg.
+
+    Set ``loop=True`` to loop continuously until the stream is closed.
+    Requires ``ffmpeg`` on PATH.
+    """
 
     path: str
     loop: bool = False
 
 
 @dataclass(frozen=True, slots=True)
-class CameraSource:
-    """Capture from a local camera over WebRTC."""
+class RTSPSource:
+    """Stream from an RTSP camera/server via FFmpeg.
 
-    device: str = "default"
+    Uses TCP transport for reliability by default.
+    Requires ``ffmpeg`` on PATH.
+    """
+
+    url: str
 
 
 @dataclass(frozen=True, slots=True)
-class NativeSource:
-    """Use server-managed LiveKit transport (default for local sources).
+class HLSSource:
+    """Stream from an HLS endpoint via FFmpeg.
 
-    When passed as the source, the SDK omits the ``source`` field from the
-    API request. The server creates a LiveKit room and returns connection
-    details. Requires ``pip install overshoot[livekit]``.
+    Requires ``ffmpeg`` on PATH.
     """
 
+    url: str
 
-SourceConfig = Union[LiveKitSource, WebRTCSource, FileSource, CameraSource, NativeSource]
 
-# Wire-ready sources (accepted by ApiClient / sent directly to the API)
-WireSource = Union[LiveKitSource, WebRTCSource]
+@dataclass(frozen=True, slots=True)
+class RTMPSource:
+    """Stream from an RTMP endpoint via FFmpeg.
+
+    Requires ``ffmpeg`` on PATH.
+    """
+
+    url: str
+
+
+@dataclass(frozen=True, slots=True)
+class CameraSource:
+    """Capture from a local camera via FFmpeg.
+
+    Requires ``ffmpeg`` on PATH.  Platform-specific device selection
+    is handled automatically when ``device="default"``.
+
+    Parameters
+    ----------
+    device:
+        Camera device identifier. ``"default"`` auto-detects the
+        platform camera (``/dev/video0`` on Linux, ``default`` via
+        avfoundation on macOS, ``video=0`` via dshow on Windows).
+    width:
+        Capture width. Defaults to 1280.
+    height:
+        Capture height. Defaults to 720.
+    """
+
+    device: str = "default"
+    width: int = 1280
+    height: int = 720
+
+
+@dataclass(slots=True)
+class FrameSource:
+    """Programmatic frame source — push raw video frames from your own pipeline.
+
+    Create a ``FrameSource``, pass it to ``streams.create()``, then call
+    :meth:`push_frame` to send frames. Works with raw RGBA bytes or
+    numpy arrays (uint8, shape ``(height, width, 4)``).
+
+    Usage::
+
+        source = overshoot.FrameSource(width=640, height=480)
+        stream = await client.streams.create(
+            source=source,
+            prompt="Describe what you see",
+            model="Qwen/Qwen3.5-9B",
+            on_result=lambda r: print(r.result),
+        )
+
+        # From OpenCV, PIL, or any pipeline
+        source.push_frame(rgba_bytes)
+
+    The ``FrameSource`` is mutable (not frozen) because the SDK
+    attaches internal LiveKit objects to it after stream creation.
+    """
+
+    width: int
+    height: int
+
+    # Attached by the SDK during source resolution — not user-facing
+    _livekit_video_source: Any = None
+    _livekit_video_track: Any = None
+
+    def push_frame(self, data: Any) -> None:
+        """Push a single video frame.
+
+        Parameters
+        ----------
+        data:
+            Frame data — either raw RGBA bytes (length must be
+            ``width * height * 4``) or a numpy ``ndarray`` with
+            shape ``(height, width, 4)`` and dtype ``uint8``.
+
+        Raises
+        ------
+        RuntimeError:
+            If the source is not yet connected (stream not created).
+        ValueError:
+            If the data size does not match the expected frame size.
+        """
+        if self._livekit_video_source is None:
+            raise RuntimeError(
+                "FrameSource is not connected — create a stream first"
+            )
+
+        from livekit import rtc as livekit_rtc
+
+        # Convert numpy array to bytes
+        raw: bytes
+        if hasattr(data, "tobytes"):
+            raw = data.tobytes()
+        elif isinstance(data, (bytes, bytearray, memoryview)):
+            raw = bytes(data)
+        else:
+            raise TypeError(
+                f"Expected bytes or numpy array, got {type(data).__name__}"
+            )
+
+        expected = self.width * self.height * 4
+        if len(raw) != expected:
+            raise ValueError(
+                f"Frame data size mismatch: got {len(raw)} bytes, "
+                f"expected {expected} ({self.width}x{self.height} RGBA)"
+            )
+
+        frame = livekit_rtc.VideoFrame(
+            self.width,
+            self.height,
+            livekit_rtc.VideoBufferType.RGBA,
+            raw,
+        )
+        self._livekit_video_source.capture_frame(frame)
+
+
+# All source configs the high-level API accepts
+SourceConfig = Union[
+    LiveKitSource, FileSource, RTSPSource, HLSSource, RTMPSource,
+    CameraSource, FrameSource,
+]
+
+# Wire-ready sources (sent directly to the API)
+WireSource = LiveKitSource
 
 
 # ── Processing configs ───────────────────────────────────────────────
@@ -72,15 +197,10 @@ WireSource = Union[LiveKitSource, WebRTCSource]
 class ClipProcessingConfig:
     """Processing parameters for clip mode (temporal video analysis).
 
-    Two mutually exclusive formats:
-    - New (preferred): ``target_fps`` — the server samples frames at this rate.
-    - Legacy: ``fps`` + ``sampling_ratio`` — resolved server-side to
-      ``target_fps = int(fps * sampling_ratio)``.
+    ``target_fps`` controls the frame sampling rate on the server (1-30).
     """
 
     target_fps: Optional[int] = None
-    sampling_ratio: Optional[float] = None
-    fps: Optional[int] = None
     clip_length_seconds: float = 0.5
     delay_seconds: float = 0.5
 
@@ -89,7 +209,7 @@ class ClipProcessingConfig:
 class FrameProcessingConfig:
     """Processing parameters for frame mode (periodic snapshot analysis)."""
 
-    interval_seconds: float = 2.0
+    interval_seconds: float = 0.2
 
 
 ProcessingConfig = Union[ClipProcessingConfig, FrameProcessingConfig]
@@ -102,30 +222,12 @@ class InferenceConfig:
     """Model inference configuration."""
 
     prompt: str
-    backend: ModelBackend = "overshoot"
-    model: str = "Qwen/Qwen3-VL-30B-A3B-Instruct"
+    model: str
     output_schema_json: Optional[dict[str, Any]] = None
     max_output_tokens: Optional[int] = None
 
 
 # ── Response types ───────────────────────────────────────────────────
-
-@dataclass(frozen=True, slots=True)
-class WebRTCAnswer:
-    """WebRTC SDP answer returned from the server."""
-
-    type: Literal["answer"]
-    sdp: str
-
-
-@dataclass(frozen=True, slots=True)
-class TurnServer:
-    """TURN/TURNS server configuration."""
-
-    urls: str
-    username: str
-    credential: str
-
 
 @dataclass(frozen=True, slots=True)
 class Lease:
@@ -147,9 +249,7 @@ class StreamCreateResponse:
     """Response from POST /streams."""
 
     stream_id: str
-    webrtc: Optional[WebRTCAnswer] = None
     lease: Optional[Lease] = None
-    turn_servers: Optional[list[TurnServer]] = None
     livekit: Optional[LiveKitConnection] = None
 
 
@@ -173,7 +273,6 @@ class StreamConfigResponse:
     id: str
     stream_id: str
     prompt: str
-    backend: ModelBackend
     model: str
     output_schema_json: Optional[dict[str, Any]] = None
     created_at: Optional[str] = None
@@ -194,7 +293,6 @@ class StreamInferenceResult:
     id: str
     stream_id: str
     mode: StreamMode
-    model_backend: ModelBackend
     model_name: str
     prompt: str
     result: str
@@ -224,26 +322,3 @@ class ModelInfo:
     model: str
     ready: bool
     status: ModelStatus
-
-
-# ── Feedback ────────────────────────────────────────────────────────
-
-@dataclass(frozen=True, slots=True)
-class FeedbackCreateRequest:
-    """Request body for submitting feedback on a stream."""
-
-    rating: int
-    category: str
-    feedback: str
-
-
-@dataclass(frozen=True, slots=True)
-class FeedbackResponse:
-    """Response from the feedback endpoints."""
-
-    id: str
-    stream_id: str
-    rating: int
-    category: str
-    feedback: str
-    created_at: Optional[str] = None
