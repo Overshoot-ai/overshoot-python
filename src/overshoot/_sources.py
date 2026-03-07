@@ -194,7 +194,7 @@ async def _resolve_camera_source(source: CameraSource, target_fps: int) -> Resol
             device = "/dev/video0"
             fmt = "v4l2"
         elif system == "Darwin":
-            device = "default"
+            device = "0:none"
             fmt = "avfoundation"
         else:
             device = "video=0"
@@ -204,6 +204,14 @@ async def _resolve_camera_source(source: CameraSource, target_fps: int) -> Resol
 
     ffmpeg_fps = max(target_fps, 15)
 
+    # Camera devices require framerate and video_size as input options.
+    # Use 30fps capture; the output fps filter downsamples to target_fps.
+    # (avfoundation on macOS rejects lower framerates even when listed as supported)
+    extra_input_args = [
+        "-framerate", "30",
+        "-video_size", f"{source.width}x{source.height}",
+    ]
+
     ffmpeg = FFmpegSource(
         device,
         target_fps=ffmpeg_fps,
@@ -211,6 +219,7 @@ async def _resolve_camera_source(source: CameraSource, target_fps: int) -> Resol
         height=source.height,
         loop=False,
         input_format=fmt,
+        extra_input_args=extra_input_args,
         probe=False,  # can't probe camera devices
     )
     await ffmpeg.start()
