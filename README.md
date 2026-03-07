@@ -14,7 +14,7 @@ Python SDK for [Overshoot](https://overshoot.ai) real-time video analysis API.
 ## Installation
 
 ```bash
-pip install overshoot
+pip install git+https://github.com/Overshoot-ai/overshoot-python.git
 ```
 
 ## Quick Start
