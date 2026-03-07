@@ -257,34 +257,37 @@ async def _pump_frames(
     stats_start = time.monotonic()
     last_stats_time = time.monotonic()
 
-    while True:
-        frame_info = await ffmpeg.read_frame()
-        if frame_info is None:
-            logger.warning("FFmpeg source ended")
-            break
+    try:
+        while True:
+            frame_info = await ffmpeg.read_frame()
+            if frame_info is None:
+                logger.warning("FFmpeg source ended")
+                break
 
-        frame = livekit_rtc.VideoFrame(
-            frame_info.width,
-            frame_info.height,
-            livekit_rtc.VideoBufferType.RGBA,
-            frame_info.data,
-        )
-        video_source.capture_frame(frame)
-        t_capture = time.monotonic()
-
-        frame_count += 1
-
-        next_frame_time += interval
-        sleep_for = next_frame_time - t_capture
-        if sleep_for > 0:
-            await asyncio.sleep(sleep_for)
-
-        now = time.monotonic()
-        if now - last_stats_time >= 10.0:
-            elapsed = now - stats_start
-            actual_fps = frame_count / elapsed if elapsed > 0 else 0
-            logger.info(
-                "FPS stats: target=%.1f actual=%.1f frames=%d",
-                ffmpeg.target_fps, actual_fps, frame_count,
+            frame = livekit_rtc.VideoFrame(
+                frame_info.width,
+                frame_info.height,
+                livekit_rtc.VideoBufferType.RGBA,
+                frame_info.data,
             )
-            last_stats_time = now
+            video_source.capture_frame(frame)
+            t_capture = time.monotonic()
+
+            frame_count += 1
+
+            next_frame_time += interval
+            sleep_for = next_frame_time - t_capture
+            if sleep_for > 0:
+                await asyncio.sleep(sleep_for)
+
+            now = time.monotonic()
+            if now - last_stats_time >= 10.0:
+                elapsed = now - stats_start
+                actual_fps = frame_count / elapsed if elapsed > 0 else 0
+                logger.info(
+                    "FPS stats: target=%.1f actual=%.1f frames=%d",
+                    ffmpeg.target_fps, actual_fps, frame_count,
+                )
+                last_stats_time = now
+    except asyncio.CancelledError:
+        pass

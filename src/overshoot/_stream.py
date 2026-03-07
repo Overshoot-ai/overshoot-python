@@ -155,6 +155,12 @@ class Stream:
         On unexpected disconnect, reconnects with exponential backoff.
         Fatal close codes (1008 auth, 1001 with reason) stop immediately.
         """
+        try:
+            await self._ws_loop_inner()
+        except asyncio.CancelledError:
+            pass
+
+    async def _ws_loop_inner(self) -> None:
         while not self._closed:
             try:
                 await self._ws_connect_and_consume()
@@ -299,7 +305,7 @@ class Stream:
                     asyncio.create_task(self.close(), name="overshoot-close-on-ka-fail")
                     return
         except asyncio.CancelledError:
-            raise
+            pass
 
     # ── Internal ─────────────────────────────────────────────────────
 

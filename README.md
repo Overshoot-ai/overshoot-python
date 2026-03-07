@@ -225,13 +225,13 @@ await api.close()
 | `model` | `str` | required | Model name (use `get_models()`) |
 | `on_result` | `Callable` | required | Callback for each result |
 | `on_error` | `Callable` | `None` | Callback for errors |
-| `mode` | `"clip"` or `"frame"` | auto | Stream mode |
+| `mode` | `"clip"` or `"frame"` | `"frame"` | Stream mode |
 | `output_schema` | `dict` | `None` | JSON schema for structured output |
 | `max_output_tokens` | `int` | `None` | Cap tokens per inference request |
 | `target_fps` | `int` | `6` | Clip mode: target frame sampling rate (1-30) |
 | `clip_length_seconds` | `float` | `0.5` | Clip mode: clip duration |
 | `delay_seconds` | `float` | `0.5` | Clip mode: delay between clips |
-| `interval_seconds` | `float` | `0.2` | Frame mode: capture interval |
+| `interval_seconds` | `float` | `0.5` | Frame mode: capture interval |
 
 ### Models
 

@@ -175,21 +175,22 @@ class StreamsAPI:
         interval_seconds: Optional[float],
     ) -> ProcessingConfig:
         """Build the processing config from flat params."""
-        # Explicit frame mode or interval_seconds provided
-        if mode == "frame" or (mode is None and interval_seconds is not None):
-            return FrameProcessingConfig(
-                interval_seconds=interval_seconds or DEFAULT_INTERVAL_SECONDS,
+        # Explicit clip mode or clip-specific params provided
+        has_clip_params = any(p is not None for p in (target_fps, clip_length_seconds, delay_seconds))
+        if mode == "clip" or (mode is None and has_clip_params):
+            return ClipProcessingConfig(
+                target_fps=target_fps if target_fps is not None else DEFAULT_TARGET_FPS,
+                clip_length_seconds=(
+                    clip_length_seconds
+                    if clip_length_seconds is not None
+                    else DEFAULT_CLIP_LENGTH_SECONDS
+                ),
+                delay_seconds=(
+                    delay_seconds if delay_seconds is not None else DEFAULT_DELAY_SECONDS
+                ),
             )
 
-        # Clip mode (default)
-        return ClipProcessingConfig(
-            target_fps=target_fps if target_fps is not None else DEFAULT_TARGET_FPS,
-            clip_length_seconds=(
-                clip_length_seconds
-                if clip_length_seconds is not None
-                else DEFAULT_CLIP_LENGTH_SECONDS
-            ),
-            delay_seconds=(
-                delay_seconds if delay_seconds is not None else DEFAULT_DELAY_SECONDS
-            ),
+        # Frame mode (default)
+        return FrameProcessingConfig(
+            interval_seconds=interval_seconds or DEFAULT_INTERVAL_SECONDS,
         )
