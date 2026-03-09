@@ -16,7 +16,9 @@ from typing import Any, Optional
 
 from livekit import rtc as livekit_rtc
 
+from ._constants import FFMPEG_MAX_FPS, FFMPEG_MIN_FPS
 from ._ffmpeg import FFmpegSource
+from .errors import SourceEndedError
 from .types import (
     CameraSource,
     FileSource,
@@ -46,11 +48,13 @@ class ResolvedSource:
         ffmpeg_source: Optional[FFmpegSource] = None,
         livekit_video_source: Optional[Any] = None,
         livekit_video_track: Optional[Any] = None,
+        pump_task: Optional[asyncio.Task[None]] = None,
     ) -> None:
         self.wire_source = wire_source
         self.ffmpeg_source = ffmpeg_source
         self.livekit_video_source = livekit_video_source
         self.livekit_video_track = livekit_video_track
+        self.pump_task = pump_task
 
     @property
     def is_native(self) -> bool:
@@ -58,7 +62,14 @@ class ResolvedSource:
         return self.wire_source is None and self.livekit_video_track is not None
 
     async def close(self) -> None:
-        """Clean up the FFmpeg source and LiveKit references."""
+        """Clean up the pump task, FFmpeg source, and LiveKit references."""
+        if self.pump_task is not None:
+            self.pump_task.cancel()
+            try:
+                await self.pump_task
+            except asyncio.CancelledError:
+                pass
+            self.pump_task = None
         if self.ffmpeg_source is not None:
             await self.ffmpeg_source.stop()
             self.ffmpeg_source = None
@@ -67,6 +78,15 @@ class ResolvedSource:
             self.livekit_video_source = None
         if self.livekit_video_track is not None:
             self.livekit_video_track = None
+
+
+def _clamp_fps(target_fps: int) -> int:
+    """Clamp target FPS to the valid range."""
+    clamped = max(FFMPEG_MIN_FPS, min(target_fps, FFMPEG_MAX_FPS))
+    if clamped != target_fps:
+        logger.warning("target_fps %d clamped to %d (valid range: %d-%d)",
+                       target_fps, clamped, FFMPEG_MIN_FPS, FFMPEG_MAX_FPS)
+    return clamped
 
 
 async def resolve_source(
@@ -151,7 +171,7 @@ async def _resolve_ffmpeg_source(
     name: str = "",
 ) -> ResolvedSource:
     """Create an FFmpeg source and LiveKit video track from a file or URL."""
-    ffmpeg_fps = max(target_fps, 15)
+    ffmpeg_fps = _clamp_fps(target_fps)
 
     ffmpeg = FFmpegSource(
         input_path,
@@ -164,7 +184,7 @@ async def _resolve_ffmpeg_source(
     video_source = livekit_rtc.VideoSource(ffmpeg.width, ffmpeg.height)
     video_track = livekit_rtc.LocalVideoTrack.create_video_track("video", video_source)
 
-    asyncio.create_task(
+    pump_task = asyncio.create_task(
         _pump_frames(ffmpeg, video_source),
         name=f"overshoot-pump-{name[:30]}",
     )
@@ -177,6 +197,7 @@ async def _resolve_ffmpeg_source(
         ffmpeg_source=ffmpeg,
         livekit_video_source=video_source,
         livekit_video_track=video_track,
+        pump_task=pump_task,
     )
 
 
@@ -202,7 +223,7 @@ async def _resolve_camera_source(source: CameraSource, target_fps: int) -> Resol
     elif device.startswith("/dev/"):
         fmt = "v4l2"
 
-    ffmpeg_fps = max(target_fps, 15)
+    ffmpeg_fps = _clamp_fps(target_fps)
 
     # Camera devices require framerate and video_size as input options.
     # Use 30fps capture; the output fps filter downsamples to target_fps.
@@ -227,7 +248,7 @@ async def _resolve_camera_source(source: CameraSource, target_fps: int) -> Resol
     video_source = livekit_rtc.VideoSource(ffmpeg.width, ffmpeg.height)
     video_track = livekit_rtc.LocalVideoTrack.create_video_track("video", video_source)
 
-    asyncio.create_task(
+    pump_task = asyncio.create_task(
         _pump_frames(ffmpeg, video_source),
         name="overshoot-pump-camera",
     )
@@ -240,6 +261,7 @@ async def _resolve_camera_source(source: CameraSource, target_fps: int) -> Resol
         ffmpeg_source=ffmpeg,
         livekit_video_source=video_source,
         livekit_video_track=video_track,
+        pump_task=pump_task,
     )
 
 
@@ -250,7 +272,11 @@ async def _pump_frames(
     ffmpeg: FFmpegSource,
     video_source: Any,
 ) -> None:
-    """Read frames from FFmpeg and push to LiveKit with monotonic clock pacing."""
+    """Read frames from FFmpeg and push to LiveKit with monotonic clock pacing.
+
+    Raises ``SourceEndedError`` when FFmpeg stops producing frames so that
+    the Stream can detect the failure via the task's result.
+    """
     interval = 1.0 / ffmpeg.target_fps
     next_frame_time = time.monotonic()
     frame_count = 0
@@ -261,8 +287,11 @@ async def _pump_frames(
         while True:
             frame_info = await ffmpeg.read_frame()
             if frame_info is None:
-                logger.warning("FFmpeg source ended")
-                break
+                stderr = ffmpeg.last_stderr
+                raise SourceEndedError(
+                    f"Video source ended unexpectedly (source: {ffmpeg.source})",
+                    stderr=stderr or None,
+                )
 
             frame = livekit_rtc.VideoFrame(
                 frame_info.width,

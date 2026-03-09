@@ -8,9 +8,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
+from ._constants import FFMPEG_READ_TIMEOUT_SECONDS
 from .errors import OvershootError
 
 logger = logging.getLogger("overshoot")
@@ -79,6 +81,7 @@ class FFmpegSource:
         input_format: Optional[str] = None,
         extra_input_args: Optional[list[str]] = None,
         probe: bool = True,
+        read_timeout: float = FFMPEG_READ_TIMEOUT_SECONDS,
     ) -> None:
         _check_ffmpeg()
 
@@ -87,6 +90,7 @@ class FFmpegSource:
         self.loop = loop
         self._input_format = input_format
         self._extra_input_args = extra_input_args or []
+        self._read_timeout = read_timeout
 
         if width and height:
             self.width, self.height = width, height
@@ -103,6 +107,8 @@ class FFmpegSource:
 
         self.frame_size = self.width * self.height * 4  # RGBA
         self._process: Optional[asyncio.subprocess.Process] = None
+        self._stderr_task: Optional[asyncio.Task[None]] = None
+        self._stderr_lines: deque[str] = deque(maxlen=20)
 
     def _build_cmd(self) -> list[str]:
         cmd = [FFMPEG_BIN]
@@ -140,25 +146,69 @@ class FFmpegSource:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        # Drain stderr to prevent pipe buffer deadlock
+        self._stderr_task = asyncio.create_task(
+            self._drain_stderr(),
+            name="overshoot-ffmpeg-stderr",
+        )
+
+    async def _drain_stderr(self) -> None:
+        """Read stderr continuously to prevent pipe buffer deadlock."""
+        if not self._process or not self._process.stderr:
+            return
+        try:
+            while True:
+                line = await self._process.stderr.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if text:
+                    self._stderr_lines.append(text)
+                    logger.debug("FFmpeg stderr: %s", text)
+        except asyncio.CancelledError:
+            pass
+
+    @property
+    def last_stderr(self) -> str:
+        """Return the last stderr lines from FFmpeg (useful for error reporting)."""
+        return "\n".join(self._stderr_lines)
 
     async def read_frame(self) -> Optional[FrameInfo]:
         """Read a single RGBA frame. Returns None on EOF or error."""
         if not self._process or not self._process.stdout:
             return None
 
-        data = b""
-        remaining = self.frame_size
-        while remaining > 0:
-            chunk = await self._process.stdout.read(remaining)
-            if not chunk:
-                return None
-            data += chunk
-            remaining -= len(chunk)
+        try:
+            data = b""
+            remaining = self.frame_size
+            while remaining > 0:
+                chunk = await asyncio.wait_for(
+                    self._process.stdout.read(remaining),
+                    timeout=self._read_timeout,
+                )
+                if not chunk:
+                    return None
+                data += chunk
+                remaining -= len(chunk)
 
-        return FrameInfo(width=self.width, height=self.height, data=data)
+            return FrameInfo(width=self.width, height=self.height, data=data)
+        except asyncio.TimeoutError:
+            logger.error(
+                "FFmpeg read timed out after %.0fs (source: %s)",
+                self._read_timeout, self.source,
+            )
+            return None
 
     async def stop(self) -> None:
         """Terminate the FFmpeg subprocess."""
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except asyncio.CancelledError:
+                pass
+            self._stderr_task = None
+
         if self._process:
             try:
                 self._process.terminate()

@@ -86,3 +86,11 @@ class WebSocketError(OvershootError):
     def __init__(self, message: str, *, code: Optional[int] = None) -> None:
         super().__init__(message)
         self.code = code
+
+
+class SourceEndedError(OvershootError):
+    """The video source stopped producing frames (FFmpeg died, stream ended, etc.)."""
+
+    def __init__(self, message: str, *, stderr: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.stderr = stderr

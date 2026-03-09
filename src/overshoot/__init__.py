@@ -48,6 +48,7 @@ from .errors import (
     InsufficientCreditsError,
     ServerError,
     NetworkError,
+    SourceEndedError,
     StreamClosedError,
     WebSocketError,
 )
@@ -165,6 +166,7 @@ __all__ = [
     "InsufficientCreditsError",
     "ServerError",
     "NetworkError",
+    "SourceEndedError",
     "StreamClosedError",
     "WebSocketError",
 ]

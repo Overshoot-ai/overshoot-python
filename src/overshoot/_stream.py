@@ -14,7 +14,7 @@ from ._constants import (
 )
 from ._http import HttpClient
 from ._sources import ResolvedSource
-from .errors import StreamClosedError, WebSocketError
+from .errors import SourceEndedError, StreamClosedError, WebSocketError
 from .types import StreamConfigResponse, StreamInferenceResult
 
 if TYPE_CHECKING:
@@ -83,6 +83,11 @@ class Stream:
                 self._keepalive_loop(), name=f"overshoot-ka-{self._stream_id[:8]}"
             )
 
+        # Monitor pump task so FFmpeg failures are visible to the user
+        pump_task = self._resolved_source.pump_task
+        if pump_task is not None:
+            pump_task.add_done_callback(self._on_pump_done)
+
     async def close(self) -> None:
         """Stop all background tasks and release resources.
 
@@ -146,6 +151,28 @@ class Stream:
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
         )
+
+    # ── Pump task monitor ──────────────────────────────────────────────
+
+    def _on_pump_done(self, task: asyncio.Task[None]) -> None:
+        """Called when the frame pump task finishes (FFmpeg died, timeout, etc.)."""
+        if self._closed:
+            return
+
+        exc = task.exception() if not task.cancelled() else None
+        if isinstance(exc, SourceEndedError):
+            logger.error("Video source ended for stream %s: %s", self._stream_id, exc)
+            self._emit_error(exc)
+        elif exc is not None:
+            logger.error("Pump task failed for stream %s: %s", self._stream_id, exc)
+            self._emit_error(
+                SourceEndedError(f"Video source error: {exc}")
+            )
+        else:
+            # Task completed without exception (cancelled) — no action needed
+            return
+
+        asyncio.create_task(self.close(), name=f"overshoot-close-on-pump-{self._stream_id[:8]}")
 
     # ── Background: WebSocket consumer with auto-reconnect ───────────
 
