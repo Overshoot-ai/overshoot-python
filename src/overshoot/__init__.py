@@ -1,5 +1,7 @@
 """Overshoot Python SDK — real-time video analysis."""
 
+from typing import Any, Optional
+
 from ._version import __version__
 from ._constants import DEFAULT_BASE_URL
 from ._http import HttpClient
@@ -36,6 +38,7 @@ from .types import (
     StatusResponse,
     Lease,
     ModelInfo,
+    ReinferResult,
 )
 
 # Errors
@@ -117,6 +120,47 @@ class Overshoot:
         self._http = HttpClient(api_key, base_url=base_url, timeout=timeout)
         self.streams = StreamsAPI(self._http)
 
+    async def reinfer(
+        self,
+        result_id: str,
+        prompt: str,
+        model: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        output_schema: Optional[dict[str, Any]] = None,
+    ) -> ReinferResult:
+        """Re-run inference on a persisted clip with a new prompt.
+
+        Parameters
+        ----------
+        result_id:
+            The ``id`` from a :class:`StreamInferenceResult`.
+        prompt:
+            New prompt to run on the clip.
+        model:
+            Model name for inference.
+        temperature:
+            Optional sampling temperature.
+        max_tokens:
+            Optional max output tokens.
+        output_schema:
+            Optional JSON schema for structured output.
+
+        Returns
+        -------
+        ReinferResult
+            The re-inference result.
+        """
+        api = ApiClient.__new__(ApiClient)
+        api._http = self._http
+        return await api.reinfer(
+            result_id, prompt, model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            output_schema=output_schema,
+        )
+
     async def close(self) -> None:
         """Close the underlying HTTP session."""
         await self._http.close()
@@ -161,6 +205,7 @@ __all__ = [
     "StatusResponse",
     "Lease",
     "ModelInfo",
+    "ReinferResult",
     # Errors
     "OvershootError",
     "ApiError",

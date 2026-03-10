@@ -1,9 +1,11 @@
+import asyncio
 import logging
 from dataclasses import asdict
 from typing import Any, Optional
 
 from ._constants import DEFAULT_BASE_URL
 from ._http import HttpClient
+from .errors import NotFoundError
 from .types import (
     InferenceConfig,
     KeepaliveResponse,
@@ -12,6 +14,7 @@ from .types import (
     LiveKitSource,
     ModelInfo,
     ProcessingConfig,
+    ReinferResult,
     StatusResponse,
     StreamConfigResponse,
     StreamCreateResponse,
@@ -168,6 +171,67 @@ class ApiClient:
             )
             for m in models
         ]
+
+    async def reinfer(
+        self,
+        result_id: str,
+        prompt: str,
+        model: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        output_schema: Optional[dict[str, Any]] = None,
+    ) -> ReinferResult:
+        """POST /chat/completions/clip — Re-run inference on a persisted clip.
+
+        Clips take ~1-2s to persist after the original inference result.
+        This method retries up to 3 times on 404 with 1s backoff to handle
+        the race condition.
+
+        Parameters
+        ----------
+        result_id:
+            The ``id`` from a :class:`StreamInferenceResult`.
+        prompt:
+            New prompt to run on the clip.
+        model:
+            Model name for inference.
+        temperature:
+            Optional sampling temperature.
+        max_tokens:
+            Optional max output tokens.
+        output_schema:
+            Optional JSON schema for structured output.
+        """
+        body: dict[str, Any] = {
+            "result_id": result_id,
+            "prompt": prompt,
+            "model": model,
+        }
+        if temperature is not None:
+            body["temperature"] = temperature
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        if output_schema is not None:
+            body["output_schema"] = output_schema
+
+        last_err: Optional[NotFoundError] = None
+        for attempt in range(4):  # 0, 1, 2, 3 = initial + 3 retries
+            if attempt > 0:
+                await asyncio.sleep(1.0)
+                logger.debug("Retrying reinfer (attempt %d/3) for %s", attempt, result_id)
+            try:
+                data = await self._http.request("POST", "/chat/completions/clip", json_body=body)
+                return ReinferResult(
+                    id=data.get("id", ""),
+                    model=data.get("model", model),
+                    content=data.get("content", ""),
+                    finish_reason=data.get("finish_reason"),
+                    usage=data.get("usage"),
+                )
+            except NotFoundError as exc:
+                last_err = exc
+        raise last_err  # type: ignore[misc]
 
     async def health_check(self) -> str:
         """GET /healthz — Check API health."""

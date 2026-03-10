@@ -313,6 +313,29 @@ class StreamInferenceResult:
         return json.loads(self.result)
 
 
+# ── Re-inference result ─────────────────────────────────────────────
+
+@dataclass(frozen=True, slots=True)
+class ReinferResult:
+    """Result from re-running inference on a persisted clip.
+
+    Returned by :meth:`ApiClient.reinfer` and :meth:`Overshoot.reinfer`.
+    """
+
+    id: str
+    model: str
+    content: str
+    finish_reason: Optional[str] = None
+    usage: Optional[dict[str, Any]] = None
+
+    def content_json(self) -> Any:
+        """Parse ``self.content`` as JSON.
+
+        Raises ``ValueError`` if the content is not valid JSON.
+        """
+        return json.loads(self.content)
+
+
 # ── Model info ──────────────────────────────────────────────────────
 
 @dataclass(frozen=True, slots=True)
