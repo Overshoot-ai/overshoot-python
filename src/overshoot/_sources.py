@@ -18,6 +18,7 @@ from livekit import rtc as livekit_rtc
 
 from ._constants import FFMPEG_MAX_FPS, FFMPEG_MIN_FPS
 from ._ffmpeg import FFmpegSource
+from ._go_publisher import GoPublisherSource, go_publisher_available, _probe_codec
 from .errors import SourceEndedError
 from .types import (
     CameraSource,
@@ -32,6 +33,14 @@ from .types import (
 )
 
 logger = logging.getLogger("overshoot")
+
+# Reduces startup latency and buffering for real-time network sources
+_LOW_LATENCY_FLAGS = (
+    "-fflags", "nobuffer",
+    "-flags", "low_delay",
+    "-analyzeduration", "500000",
+    "-probesize", "500000",
+)
 
 
 class ResolvedSource:
@@ -49,20 +58,31 @@ class ResolvedSource:
         livekit_video_source: Optional[Any] = None,
         livekit_video_track: Optional[Any] = None,
         pump_task: Optional[asyncio.Task[None]] = None,
+        go_publisher: Optional[GoPublisherSource] = None,
     ) -> None:
         self.wire_source = wire_source
         self.ffmpeg_source = ffmpeg_source
         self.livekit_video_source = livekit_video_source
         self.livekit_video_track = livekit_video_track
         self.pump_task = pump_task
+        self.go_publisher = go_publisher
 
     @property
     def is_native(self) -> bool:
-        """True if this source uses native LiveKit transport."""
+        """True if this source uses native LiveKit transport (Python pump path)."""
         return self.wire_source is None and self.livekit_video_track is not None
 
+    @property
+    def uses_go_publisher(self) -> bool:
+        """True if this source uses the Go publisher binary (no Python LiveKit)."""
+        return self.go_publisher is not None
+
     async def close(self) -> None:
-        """Clean up the pump task, FFmpeg source, and LiveKit references."""
+        """Clean up all resources."""
+        if self.go_publisher is not None:
+            await self.go_publisher.stop()
+            self.go_publisher = None
+            logger.debug("Go publisher stopped")
         if self.pump_task is not None:
             self.pump_task.cancel()
             try:
@@ -116,19 +136,24 @@ async def resolve_source(
     if isinstance(source, RTSPSource):
         return await _resolve_ffmpeg_source(
             source.url, target_fps,
-            extra_input_args=["-rtsp_transport", "tcp", "-rtsp_flags", "prefer_tcp"],
+            extra_input_args=[
+                *_LOW_LATENCY_FLAGS,
+                "-rtsp_transport", "tcp", "-rtsp_flags", "prefer_tcp",
+            ],
             name=f"rtsp:{source.url}",
         )
 
     if isinstance(source, HLSSource):
         return await _resolve_ffmpeg_source(
             source.url, target_fps,
+            extra_input_args=list(_LOW_LATENCY_FLAGS),
             name=f"hls:{source.url}",
         )
 
     if isinstance(source, RTMPSource):
         return await _resolve_ffmpeg_source(
             source.url, target_fps,
+            extra_input_args=list(_LOW_LATENCY_FLAGS),
             name=f"rtmp:{source.url}",
         )
 
@@ -272,20 +297,30 @@ async def _pump_frames(
     ffmpeg: FFmpegSource,
     video_source: Any,
 ) -> None:
-    """Read frames from FFmpeg and push to LiveKit with monotonic clock pacing.
+    """Read frames from FFmpeg at full source rate and publish every frame
+    to LiveKit. Backend handles FPS sampling.
 
     Raises ``SourceEndedError`` when FFmpeg stops producing frames so that
     the Stream can detect the failure via the task's result.
     """
-    interval = 1.0 / ffmpeg.target_fps
-    next_frame_time = time.monotonic()
-    frame_count = 0
+    published_count = 0
     stats_start = time.monotonic()
     last_stats_time = time.monotonic()
 
+    # Instrumentation
+    _read_total_ms = 0.0
+    _capture_total_ms = 0.0
+    _frames_since_stats = 0
+    _read_max_ms = 0.0
+    _capture_max_ms = 0.0
+
     try:
         while True:
+            t_before_read = time.monotonic()
             frame_info = await ffmpeg.read_frame()
+            t_after_read = time.monotonic()
+            read_ms = (t_after_read - t_before_read) * 1000
+
             if frame_info is None:
                 stderr = ffmpeg.last_stderr
                 raise SourceEndedError(
@@ -296,27 +331,44 @@ async def _pump_frames(
             frame = livekit_rtc.VideoFrame(
                 frame_info.width,
                 frame_info.height,
-                livekit_rtc.VideoBufferType.RGBA,
+                livekit_rtc.VideoBufferType.NV12,
                 frame_info.data,
             )
+            t_before_capture = time.monotonic()
             video_source.capture_frame(frame)
-            t_capture = time.monotonic()
+            t_after_capture = time.monotonic()
+            capture_ms = (t_after_capture - t_before_capture) * 1000
 
-            frame_count += 1
+            published_count += 1
+            _frames_since_stats += 1
+            _read_total_ms += read_ms
+            _capture_total_ms += capture_ms
+            _read_max_ms = max(_read_max_ms, read_ms)
+            _capture_max_ms = max(_capture_max_ms, capture_ms)
 
-            next_frame_time += interval
-            sleep_for = next_frame_time - t_capture
-            if sleep_for > 0:
-                await asyncio.sleep(sleep_for)
+            # Yield to event loop periodically to prevent starvation
+            # under high-fps sources (e.g. 100fps H.265)
+            if published_count % 30 == 0:
+                await asyncio.sleep(0)
 
             now = time.monotonic()
             if now - last_stats_time >= 10.0:
                 elapsed = now - stats_start
-                actual_fps = frame_count / elapsed if elapsed > 0 else 0
+                actual_fps = published_count / elapsed if elapsed > 0 else 0
+                n = _frames_since_stats or 1
                 logger.info(
-                    "FPS stats: target=%.1f actual=%.1f frames=%d",
-                    ffmpeg.target_fps, actual_fps, frame_count,
+                    "FPS stats: published=%.1f frames=%d | "
+                    "read avg=%.1fms max=%.1fms | "
+                    "capture avg=%.1fms max=%.1fms",
+                    actual_fps, published_count,
+                    _read_total_ms / n, _read_max_ms,
+                    _capture_total_ms / n, _capture_max_ms,
                 )
                 last_stats_time = now
+                _read_total_ms = 0.0
+                _capture_total_ms = 0.0
+                _frames_since_stats = 0
+                _read_max_ms = 0.0
+                _capture_max_ms = 0.0
     except asyncio.CancelledError:
         pass

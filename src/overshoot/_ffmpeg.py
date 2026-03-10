@@ -25,7 +25,7 @@ FFPROBE_BIN = "ffprobe"
 class FrameInfo:
     width: int
     height: int
-    data: bytes  # RGBA raw pixels
+    data: bytes  # NV12 raw pixels
 
 
 def _check_ffmpeg() -> None:
@@ -44,26 +44,35 @@ def _check_ffmpeg() -> None:
             )
 
 
-def _probe_resolution(source: str) -> tuple[int, int]:
-    """Use ffprobe to get video width and height."""
-    cmd = [
-        FFPROBE_BIN, "-v", "error",
+async def _probe_resolution(source: str) -> tuple[int, int]:
+    """Use ffprobe to get video width and height (async, non-blocking)."""
+    cmd = [FFPROBE_BIN, "-v", "error"]
+    # RTSP sources need TCP transport for reliable probing (especially H.265)
+    if source.startswith("rtsp://"):
+        cmd += ["-rtsp_transport", "tcp"]
+    cmd += [
         "-select_streams", "v:0",
         "-show_entries", "stream=width,height",
         "-of", "csv=p=0:s=x",
         source,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    if result.returncode != 0:
-        raise OvershootError(f"ffprobe failed: {result.stderr.strip()}")
-    parts = result.stdout.strip().split("x")
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+    if proc.returncode != 0:
+        raise OvershootError(f"ffprobe failed: {stderr.decode().strip()}")
+    output = stdout.decode().strip()
+    parts = output.split("x")
     if len(parts) != 2:
-        raise OvershootError(f"ffprobe returned unexpected output: {result.stdout.strip()}")
+        raise OvershootError(f"ffprobe returned unexpected output: {output}")
     return int(parts[0]), int(parts[1])
 
 
 class FFmpegSource:
-    """Spawns an FFmpeg process that decodes a video source to raw RGBA frames
+    """Spawns an FFmpeg process that decodes a video source to raw NV12 frames
     piped to stdout.
 
     Supports local files, HLS URLs, RTSP, RTMP, etc.
@@ -91,21 +100,16 @@ class FFmpegSource:
         self._input_format = input_format
         self._extra_input_args = extra_input_args or []
         self._read_timeout = read_timeout
+        self._probe = probe
 
         if width and height:
             self.width, self.height = width, height
-        elif probe:
-            self.width, self.height = _probe_resolution(source)
         else:
+            # Will be resolved in start() via async ffprobe if probe=True
             self.width, self.height = 640, 480
 
-        # Cap resolution to 1280x720 to save bandwidth
-        if self.width > 1280 or self.height > 720:
-            scale = min(1280 / self.width, 720 / self.height)
-            self.width = int(self.width * scale) & ~1  # ensure even
-            self.height = int(self.height * scale) & ~1
-
-        self.frame_size = self.width * self.height * 4  # RGBA
+        self._width_height_set = width is not None and height is not None
+        self.frame_size = 0  # Set in start() after resolution is known
         self._process: Optional[asyncio.subprocess.Process] = None
         self._stderr_task: Optional[asyncio.Task[None]] = None
         self._stderr_lines: deque[str] = deque(maxlen=20)
@@ -128,8 +132,8 @@ class FFmpegSource:
 
         cmd += [
             "-i", self.source,
-            "-vf", f"fps={self.target_fps},scale={self.width}:{self.height}",
-            "-pix_fmt", "rgba",
+            "-vf", f"scale={self.width}:{self.height}",
+            "-pix_fmt", "nv12",
             "-f", "rawvideo",
             "-an",
             "-v", "error",
@@ -138,7 +142,19 @@ class FFmpegSource:
         return cmd
 
     async def start(self) -> None:
-        """Start the FFmpeg subprocess."""
+        """Probe resolution (if needed) and start the FFmpeg subprocess."""
+        # Resolve dimensions via async ffprobe if not explicitly set
+        if not self._width_height_set and self._probe:
+            self.width, self.height = await _probe_resolution(self.source)
+
+        # Cap resolution to 1280x720 to save bandwidth
+        if self.width > 1280 or self.height > 720:
+            scale = min(1280 / self.width, 720 / self.height)
+            self.width = int(self.width * scale) & ~1  # ensure even
+            self.height = int(self.height * scale) & ~1
+
+        self.frame_size = self.width * self.height * 3 // 2  # NV12
+
         cmd = self._build_cmd()
         logger.info("Starting FFmpeg: %s", " ".join(cmd))
         self._process = await asyncio.create_subprocess_exec(
@@ -174,24 +190,18 @@ class FFmpegSource:
         return "\n".join(self._stderr_lines)
 
     async def read_frame(self) -> Optional[FrameInfo]:
-        """Read a single RGBA frame. Returns None on EOF or error."""
+        """Read a single NV12 frame. Returns None on EOF or error."""
         if not self._process or not self._process.stdout:
             return None
 
         try:
-            data = b""
-            remaining = self.frame_size
-            while remaining > 0:
-                chunk = await asyncio.wait_for(
-                    self._process.stdout.read(remaining),
-                    timeout=self._read_timeout,
-                )
-                if not chunk:
-                    return None
-                data += chunk
-                remaining -= len(chunk)
-
+            data = await asyncio.wait_for(
+                self._process.stdout.readexactly(self.frame_size),
+                timeout=self._read_timeout,
+            )
             return FrameInfo(width=self.width, height=self.height, data=data)
+        except asyncio.IncompleteReadError:
+            return None
         except asyncio.TimeoutError:
             logger.error(
                 "FFmpeg read timed out after %.0fs (source: %s)",

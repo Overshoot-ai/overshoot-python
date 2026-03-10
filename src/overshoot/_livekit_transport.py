@@ -35,6 +35,7 @@ class LiveKitTransport:
         url: str,
         token: str,
         video_track: Any,
+        target_fps: int = 0,
     ) -> None:
         """Connect to a LiveKit room and publish the video track."""
         self._token = token
@@ -66,10 +67,13 @@ class LiveKitTransport:
         self._connected = True
         logger.info("Connected to LiveKit room %s", room.name)
 
-        # Publish video track
+        # Publish video track with FPS hint for WebRTC encoder adaptation
         options = livekit_rtc.TrackPublishOptions(
             source=livekit_rtc.TrackSource.SOURCE_CAMERA,
         )
+        if target_fps and target_fps > 0:
+            options.video_encoding.max_framerate = target_fps
+            options.video_encoding.max_bitrate = 2_000_000
         publication = await room.local_participant.publish_track(video_track, options)
         logger.info("Published video track: %s", publication.sid)
 

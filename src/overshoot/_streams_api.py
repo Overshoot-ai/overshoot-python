@@ -13,9 +13,10 @@ from ._constants import (
     DEFAULT_INTERVAL_SECONDS,
     DEFAULT_TARGET_FPS,
 )
+from ._go_publisher import GoPublisherSource, go_publisher_available, _probe_codec
 from ._http import HttpClient
 from ._livekit_transport import LiveKitTransport
-from ._sources import resolve_source
+from ._sources import ResolvedSource, resolve_source, _clamp_fps, _LOW_LATENCY_FLAGS
 from ._stream import Stream
 from .types import (
     ClipProcessingConfig,
@@ -107,14 +108,30 @@ class StreamsAPI:
         if isinstance(processing, ClipProcessingConfig) and processing.target_fps:
             effective_fps = processing.target_fps
 
-        # 2. Resolve source (may create FFmpeg + LiveKit video track)
-        resolved = await resolve_source(source, target_fps=effective_fps)
+        # 2. Check if Go publisher is available and source is eligible.
+        #    Only use Go for H.264 sources — H.265 transcode has pacing issues.
+        use_go = self._should_use_go_publisher(source)
+        if use_go:
+            from ._go_publisher import _probe_codec
+            from .types import RTSPSource as _RTSP
+            probe_url = source.url if isinstance(source, _RTSP) else None
+            if probe_url:
+                codec = await _probe_codec(probe_url)
+                if codec and codec != "h264":
+                    logger.info("Source codec %s is not H.264 — using Python path", codec)
+                    use_go = False
 
-        # 3. Determine mode
+        # 3. Resolve source (skip for Go publisher — it handles FFmpeg+LiveKit internally)
+        if use_go:
+            resolved = ResolvedSource(wire_source=None)
+        else:
+            resolved = await resolve_source(source, target_fps=effective_fps)
+
+        # 4. Determine mode
         if mode is None:
             mode = "frame" if isinstance(processing, FrameProcessingConfig) else "clip"
 
-        # 4. Build inference config
+        # 5. Build inference config
         inference = InferenceConfig(
             prompt=prompt,
             model=model,
@@ -122,7 +139,7 @@ class StreamsAPI:
             max_output_tokens=max_output_tokens,
         )
 
-        # 5. Call API
+        # 6. Call API
         body: dict[str, Any] = {
             "processing": _serialize_processing(processing),
             "inference": _serialize_inference(inference),
@@ -137,9 +154,15 @@ class StreamsAPI:
 
         logger.info("Stream created: %s", response.stream_id)
 
-        # 6. Connect LiveKit transport if server returned livekit connection
+        # 7. Start Go publisher OR connect LiveKit transport
         livekit_transport: Optional[LiveKitTransport] = None
-        if response.livekit and resolved.is_native:
+
+        if use_go and response.livekit:
+            await self._start_go_publisher(
+                source, resolved, response.livekit.url, response.livekit.token,
+                effective_fps,
+            )
+        elif response.livekit and resolved.is_native:
             livekit_transport = LiveKitTransport(
                 on_fatal_error=on_error,
             )
@@ -147,9 +170,10 @@ class StreamsAPI:
                 url=response.livekit.url,
                 token=response.livekit.token,
                 video_track=resolved.livekit_video_track,
+                target_fps=effective_fps,
             )
 
-        # 7. Build and start the Stream
+        # 8. Build and start the Stream
         ttl = response.lease.ttl_seconds if response.lease else 0
 
         stream = Stream(
@@ -164,6 +188,71 @@ class StreamsAPI:
         stream._start()
 
         return stream
+
+    @staticmethod
+    def _should_use_go_publisher(source: SourceConfig) -> bool:
+        """Check if the Go publisher should be used for this source."""
+        from .types import FileSource, RTSPSource, HLSSource, RTMPSource
+        if not go_publisher_available():
+            return False
+        # Go publisher only handles FFmpeg-based network/file sources
+        return isinstance(source, (FileSource, RTSPSource, HLSSource, RTMPSource))
+
+    @staticmethod
+    async def _start_go_publisher(
+        source: SourceConfig,
+        resolved: ResolvedSource,
+        livekit_url: str,
+        livekit_token: str,
+        target_fps: int,
+    ) -> None:
+        """Start the Go publisher pipeline and attach it to the resolved source."""
+        from .types import FileSource, RTSPSource, HLSSource, RTMPSource
+
+        # Determine input path and FFmpeg flags
+        if isinstance(source, FileSource):
+            input_path = source.path
+            extra_input_args = None
+            loop = source.loop
+        elif isinstance(source, RTSPSource):
+            input_path = source.url
+            extra_input_args = [
+                *_LOW_LATENCY_FLAGS,
+                "-rtsp_transport", "tcp", "-rtsp_flags", "prefer_tcp",
+            ]
+            loop = False
+        elif isinstance(source, HLSSource):
+            input_path = source.url
+            extra_input_args = list(_LOW_LATENCY_FLAGS)
+            loop = False
+        elif isinstance(source, RTMPSource):
+            input_path = source.url
+            extra_input_args = list(_LOW_LATENCY_FLAGS)
+            loop = False
+        else:
+            raise TypeError(f"Go publisher does not support {type(source)}")
+
+        # Detect source codec for passthrough optimization
+        source_codec = await _probe_codec(input_path)
+        if source_codec:
+            logger.info("Detected source codec: %s", source_codec)
+
+        ffmpeg_fps = _clamp_fps(target_fps)
+
+        go_pub = GoPublisherSource(
+            input_path,
+            livekit_url=livekit_url,
+            livekit_token=livekit_token,
+            target_fps=ffmpeg_fps,
+            source_codec=source_codec,
+            extra_input_args=extra_input_args,
+            loop=loop,
+        )
+        await go_pub.start()
+        resolved.go_publisher = go_pub
+
+        logger.info("Go publisher pipeline started (codec=%s, fps=%d)",
+                     source_codec or "transcode", ffmpeg_fps)
 
     @staticmethod
     def _build_processing(
