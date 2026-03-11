@@ -57,9 +57,6 @@ from .errors import (
 )
 
 
-from ._go_publisher import go_publisher_available
-
-
 async def get_models(
     api_key: str,
     *,
@@ -175,7 +172,6 @@ __all__ = [
     "Stream",
     # Utility
     "get_models",
-    "go_publisher_available",
     # Sources
     "CameraSource",
     "FileSource",

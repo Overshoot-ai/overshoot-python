@@ -88,11 +88,6 @@ class Stream:
         if pump_task is not None:
             pump_task.add_done_callback(self._on_pump_done)
 
-        # Monitor Go publisher pipeline if active
-        go_pub = self._resolved_source.go_publisher
-        if go_pub is not None and go_pub.ended_future is not None:
-            go_pub.ended_future.add_done_callback(self._on_go_publisher_done)
-
     async def close(self) -> None:
         """Stop all background tasks and release resources.
 
@@ -178,21 +173,6 @@ class Stream:
             return
 
         asyncio.create_task(self.close(), name=f"overshoot-close-on-pump-{self._stream_id[:8]}")
-
-    def _on_go_publisher_done(self, future: asyncio.Future[Any]) -> None:
-        """Called when the Go publisher pipeline ends."""
-        if self._closed:
-            return
-
-        error = future.result() if not future.cancelled() else None
-        if isinstance(error, Exception):
-            logger.error("Go publisher ended for stream %s: %s", self._stream_id, error)
-            self._emit_error(error)
-        else:
-            logger.error("Go publisher ended unexpectedly for stream %s", self._stream_id)
-            self._emit_error(SourceEndedError("Go publisher pipeline ended unexpectedly"))
-
-        asyncio.create_task(self.close(), name=f"overshoot-close-on-gopub-{self._stream_id[:8]}")
 
     # ── Background: WebSocket consumer with auto-reconnect ───────────
 

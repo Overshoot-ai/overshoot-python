@@ -18,7 +18,6 @@ from livekit import rtc as livekit_rtc
 
 from ._constants import FFMPEG_MAX_FPS, FFMPEG_MIN_FPS
 from ._ffmpeg import FFmpegSource
-from ._go_publisher import GoPublisherSource, go_publisher_available, _probe_codec
 from .errors import SourceEndedError
 from .types import (
     CameraSource,
@@ -58,31 +57,20 @@ class ResolvedSource:
         livekit_video_source: Optional[Any] = None,
         livekit_video_track: Optional[Any] = None,
         pump_task: Optional[asyncio.Task[None]] = None,
-        go_publisher: Optional[GoPublisherSource] = None,
     ) -> None:
         self.wire_source = wire_source
         self.ffmpeg_source = ffmpeg_source
         self.livekit_video_source = livekit_video_source
         self.livekit_video_track = livekit_video_track
         self.pump_task = pump_task
-        self.go_publisher = go_publisher
 
     @property
     def is_native(self) -> bool:
         """True if this source uses native LiveKit transport (Python pump path)."""
         return self.wire_source is None and self.livekit_video_track is not None
 
-    @property
-    def uses_go_publisher(self) -> bool:
-        """True if this source uses the Go publisher binary (no Python LiveKit)."""
-        return self.go_publisher is not None
-
     async def close(self) -> None:
         """Clean up all resources."""
-        if self.go_publisher is not None:
-            await self.go_publisher.stop()
-            self.go_publisher = None
-            logger.debug("Go publisher stopped")
         if self.pump_task is not None:
             self.pump_task.cancel()
             try:
