@@ -301,6 +301,10 @@ class StreamInferenceResult:
     ok: bool
     error: Optional[str] = None
     finish_reason: Optional[str] = None
+    # Arrival timestamps (ISO 8601 UTC) — present in recent server versions.
+    first_frame_arrival_ts: Optional[str] = None
+    last_frame_arrival_ts: Optional[str] = None
+    frame_arrival_ts: Optional[str] = None
 
     def result_json(self) -> Any:
         """Parse ``self.result`` as JSON.

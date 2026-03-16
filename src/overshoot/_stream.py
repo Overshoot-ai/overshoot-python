@@ -282,6 +282,9 @@ class Stream:
                 ok=data["ok"],
                 error=data.get("error"),
                 finish_reason=data.get("finish_reason"),
+                first_frame_arrival_ts=data.get("first_frame_arrival_ts"),
+                last_frame_arrival_ts=data.get("last_frame_arrival_ts"),
+                frame_arrival_ts=data.get("frame_arrival_ts"),
             )
             self._on_result(result)
         except (json.JSONDecodeError, KeyError) as exc:

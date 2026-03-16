@@ -126,6 +126,7 @@ class Overshoot:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         output_schema: Optional[dict[str, Any]] = None,
+        chat_template_kwargs: Optional[dict[str, Any]] = None,
     ) -> ReinferResult:
         """Re-run inference on a persisted clip with a new prompt.
 
@@ -143,6 +144,8 @@ class Overshoot:
             Optional max output tokens.
         output_schema:
             Optional JSON schema for structured output.
+        chat_template_kwargs:
+            Optional model-specific chat template parameters.
 
         Returns
         -------
@@ -156,6 +159,7 @@ class Overshoot:
             temperature=temperature,
             max_tokens=max_tokens,
             output_schema=output_schema,
+            chat_template_kwargs=chat_template_kwargs,
         )
 
     async def close(self) -> None:

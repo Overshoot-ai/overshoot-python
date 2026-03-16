@@ -84,6 +84,7 @@ class HttpClient:
                 if resp.ok:
                     return data
 
+                logger.debug("HTTP %d %s %s — body: %s", resp.status, method, path, data)
                 message = data.get("message") or data.get("error", "Unknown error")
                 request_id = data.get("request_id")
                 details = data.get("details")

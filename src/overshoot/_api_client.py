@@ -181,6 +181,7 @@ class ApiClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         output_schema: Optional[dict[str, Any]] = None,
+        chat_template_kwargs: Optional[dict[str, Any]] = None,
     ) -> ReinferResult:
         """POST /chat/completions/clip — Re-run inference on a persisted clip.
 
@@ -202,10 +203,12 @@ class ApiClient:
             Optional max output tokens.
         output_schema:
             Optional JSON schema for structured output.
+        chat_template_kwargs:
+            Optional model-specific chat template parameters.
         """
         body: dict[str, Any] = {
             "result_id": result_id,
-            "prompt": prompt,
+            "messages": [{"role": "user", "content": prompt}],
             "model": model,
         }
         if temperature is not None:
@@ -214,23 +217,38 @@ class ApiClient:
             body["max_tokens"] = max_tokens
         if output_schema is not None:
             body["output_schema"] = output_schema
+        if chat_template_kwargs is not None:
+            body["chat_template_kwargs"] = chat_template_kwargs
+
+        logger.debug("reinfer: result_id=%s model=%s prompt_len=%d", result_id, model, len(prompt))
+        logger.debug("reinfer: request body keys=%s", list(body.keys()))
 
         last_err: Optional[NotFoundError] = None
         for attempt in range(4):  # 0, 1, 2, 3 = initial + 3 retries
             if attempt > 0:
                 await asyncio.sleep(1.0)
-                logger.debug("Retrying reinfer (attempt %d/3) for %s", attempt, result_id)
+                logger.debug("reinfer: retry %d/3 for %s", attempt, result_id)
             try:
-                data = await self._http.request("POST", "/chat/completions/clip", json_body=body)
-                return ReinferResult(
+                data = await self._http.request("POST", "/infer/chat/completions/clip", json_body=body)
+                logger.debug("reinfer: response keys=%s", list(data.keys()))
+                choice = data.get("choices", [{}])[0]
+                message = choice.get("message", {})
+                result = ReinferResult(
                     id=data.get("id", ""),
                     model=data.get("model", model),
-                    content=data.get("content", ""),
-                    finish_reason=data.get("finish_reason"),
+                    content=message.get("content", ""),
+                    finish_reason=choice.get("finish_reason"),
                     usage=data.get("usage"),
                 )
+                logger.debug(
+                    "reinfer: success id=%s finish_reason=%s content_len=%d",
+                    result.id, result.finish_reason, len(result.content),
+                )
+                return result
             except NotFoundError as exc:
+                logger.debug("reinfer: 404 for %s (attempt %d): %s", result_id, attempt, exc)
                 last_err = exc
+        logger.debug("reinfer: all retries exhausted for %s", result_id)
         raise last_err  # type: ignore[misc]
 
     async def health_check(self) -> str:
