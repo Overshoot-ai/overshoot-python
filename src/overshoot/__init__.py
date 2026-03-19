@@ -26,6 +26,7 @@ from .types import (
     ProcessingConfig,
     InferenceConfig,
     StreamMode,
+    StreamState,
     FinishReason,
     ModelStatus,
     StreamStopReason,
@@ -192,6 +193,7 @@ __all__ = [
     "ProcessingConfig",
     "InferenceConfig",
     "StreamMode",
+    "StreamState",
     # Type aliases
     "FinishReason",
     "ModelStatus",

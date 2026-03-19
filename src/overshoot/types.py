@@ -8,6 +8,7 @@ from typing import Any, Literal, Optional, Union
 StreamMode = Literal["clip", "frame"]
 FinishReason = Literal["stop", "length", "content_filter"]
 ModelStatus = Literal["unavailable", "ready", "degraded", "saturated"]
+StreamState = Literal["pending", "active", "idle"]
 StreamStopReason = Literal[
     "client_requested",
     "webrtc_disconnected",
@@ -260,6 +261,7 @@ class KeepaliveResponse:
     status: str
     stream_id: str
     ttl_seconds: int
+    state: Optional[StreamState] = None
     credits_remaining_cents: Optional[float] = None
     cost_cents: Optional[float] = None
     seconds_charged: Optional[float] = None

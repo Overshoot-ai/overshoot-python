@@ -72,6 +72,7 @@ def _parse_keepalive_response(data: dict[str, Any]) -> KeepaliveResponse:
         status=data.get("status", "ok"),
         stream_id=data.get("stream_id", ""),
         ttl_seconds=data.get("ttl_seconds", 0),
+        state=data.get("state"),
         credits_remaining_cents=data.get("credits_remaining_cents"),
         cost_cents=data.get("cost_cents"),
         seconds_charged=data.get("seconds_charged"),
